@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
+# Development / test dependencies.
+-r requirements.txt
+pytest>=8.0
