@@ -142,3 +142,54 @@ def test_settings_change_reflected_in_state(web):
     ).json()
     assert state["settings"]["theme"] == "sepia"
     assert state["settings"]["font_scale"] == 1.4
+
+
+# ---- upload (browser file picker / drag-and-drop) ------------------------- #
+@pytest.fixture()
+def empty_client():
+    frontend = WebFrontend(ReaderSession(MemoryProgressStore()))
+    return frontend, TestClient(create_app(frontend))
+
+
+def test_upload_opens_book(empty_client, epub3_path):
+    from pathlib import Path
+
+    frontend, client = empty_client
+    data = Path(epub3_path).read_bytes()
+    state = client.post("/api/upload", params={"name": "My Book.epub"}, content=data).json()
+    assert state["is_open"] is True
+    assert state["section"]["key"] == "OEBPS/ch1.xhtml"
+    # And the just-uploaded book's resources are now served.
+    assert client.get("/resource/OEBPS/ch1.xhtml").status_code == 200
+
+
+def test_upload_rejects_non_epub_bytes(empty_client):
+    _, client = empty_client
+    assert client.post("/api/upload", content=b"not a zip").status_code == 400
+
+
+def test_upload_rejects_empty_body(empty_client):
+    _, client = empty_client
+    assert client.post("/api/upload", content=b"").status_code == 400
+
+
+def test_upload_filename_is_sanitized():
+    from epubreader.frontends.web.frontend import _safe_filename
+
+    safe = _safe_filename("../../etc/passwd")
+    assert "/" not in safe and ".." not in safe
+    assert safe.endswith(".epub")
+
+
+def test_second_upload_cleans_previous_temp(empty_client, epub3_path, epub2_path):
+    from pathlib import Path
+
+    frontend, client = empty_client
+    client.post("/api/upload", params={"name": "a.epub"}, content=Path(epub3_path).read_bytes())
+    first_temp = frontend._temp_dir
+    assert first_temp and Path(first_temp).is_dir()
+    client.post("/api/upload", params={"name": "b.epub"}, content=Path(epub2_path).read_bytes())
+    # The new upload's temp exists; the previous one has been cleaned up.
+    assert frontend._temp_dir != first_temp
+    assert Path(frontend._temp_dir).is_dir()
+    assert not Path(first_temp).exists()

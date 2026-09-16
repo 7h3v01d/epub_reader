@@ -21,6 +21,10 @@ frontend turns ``section.key`` into ``/resource/<key>``, and that route serves
 from __future__ import annotations
 
 import dataclasses
+import os
+import re
+import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -48,6 +52,7 @@ class WebFrontend(ReaderFrontend):
         super().__init__()
         self.bind_session(session)
         self._lock = threading.RLock()
+        self._temp_dir: Optional[str] = None
         self._section: Optional[RenderedSection] = None
         self._metadata: Optional[Metadata] = None
         self._toc: tuple[NavPoint, ...] = ()
@@ -81,6 +86,29 @@ class WebFrontend(ReaderFrontend):
             self._error = ""
             self.session.open(path)
             return self._state_locked()
+
+    def open_bytes(self, data: bytes, name: str = "book.epub") -> dict:
+        """Open a book from uploaded bytes (browser file picker / drag-drop).
+
+        The engine reads an EPUB from a filesystem path and streams resources
+        from it lazily, so the bytes are written to a private temp file that
+        lives as long as the book is open. The previous upload's temp directory
+        is removed once the new book has been opened (which closes the old one).
+        """
+        with self._lock:
+            new_dir = tempfile.mkdtemp(prefix="epubreader-")
+            dest = Path(new_dir) / _safe_filename(name)
+            dest.write_bytes(data)
+            old_dir = self._temp_dir
+            try:
+                result = self.open_path(str(dest))
+            except Exception:
+                shutil.rmtree(new_dir, ignore_errors=True)
+                raise
+            self._temp_dir = new_dir
+            if old_dir:
+                shutil.rmtree(old_dir, ignore_errors=True)
+            return result
 
     def state(self) -> dict:
         with self._lock:
@@ -194,6 +222,19 @@ class WebFrontend(ReaderFrontend):
             "settings": self.session.settings().to_dict() if self.session else None,
             "error": self._error,
         }
+
+
+def _safe_filename(name: str) -> str:
+    """Reduce an uploaded name to a safe basename (defends the temp path).
+
+    Only the basename is kept, then restricted to a conservative character set,
+    so a crafted upload name cannot traverse out of the temp directory.
+    """
+    base = os.path.basename(name or "")
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip("._") or "book"
+    if not base.lower().endswith(".epub"):
+        base += ".epub"
+    return base
 
 
 def _section_payload(section: RenderedSection) -> dict:

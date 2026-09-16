@@ -87,9 +87,32 @@ function applyState(state) {
 async function refreshAll() {
   const state = await api("GET", "/api/state");
   applyState(state);
-  if (state.is_open) {
-    renderToc(await api("GET", "/api/toc"));
-    renderBookmarks(await api("GET", "/api/bookmarks"));
+  if (state.is_open) await loadSidebars();
+}
+
+async function loadSidebars() {
+  renderToc(await api("GET", "/api/toc"));
+  renderBookmarks(await api("GET", "/api/bookmarks"));
+}
+
+async function afterOpen(state) {
+  applyState(state);
+  if (state && state.is_open) await loadSidebars();
+}
+
+async function uploadFile(file) {
+  if (!file) return;
+  if (!/\.epub$/i.test(file.name)) { setStatus("Not an .epub file", true); return; }
+  setStatus(`Opening ${file.name} …`);
+  try {
+    const res = await fetch("/api/upload?name=" + encodeURIComponent(file.name), {
+      method: "POST",
+      body: file,
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    await afterOpen(await res.json());
+  } catch (e) {
+    setStatus(e.message, true);
   }
 }
 
@@ -167,6 +190,40 @@ async function pushSettings() {
 }
 
 // ---- wiring ---------------------------------------------------------------
+// ---- open: file button + drag-and-drop ------------------------------------
+$("open").onclick = () => $("file").click();
+$("file").onchange = (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";                 // allow re-selecting the same file
+  uploadFile(file);
+};
+$("empty").onclick = () => $("file").click();
+
+const dropzone = $("dropzone");
+let dragDepth = 0;
+const dragHasFiles = (e) =>
+  e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+
+window.addEventListener("dragenter", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  dropzone.hidden = false;             // overlay sits above the iframe, so it
+});                                     // reliably captures the drop
+window.addEventListener("dragover", (e) => { if (dragHasFiles(e)) e.preventDefault(); });
+window.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropzone.hidden = true;
+});
+window.addEventListener("drop", (e) => {
+  e.preventDefault();                  // never let the browser navigate to the file
+  dragDepth = 0;
+  dropzone.hidden = true;
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+
+// ---- navigation + settings wiring -----------------------------------------
 $("prev").onclick = () => act(api("POST", "/api/prev"));
 $("next").onclick = () => act(api("POST", "/api/next"));
 $("theme").onchange = pushSettings;

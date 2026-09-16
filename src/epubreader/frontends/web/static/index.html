@@ -13,6 +13,8 @@ SPDX-FileCopyrightText: 2026 Leon Priest <github.com/7h3v01d>
 <body>
   <header id="toolbar">
     <span id="brand">epubreader</span>
+    <button id="open" class="btn">Open</button>
+    <input id="file" type="file" accept=".epub,application/epub+zip" hidden />
     <div class="spacer"></div>
     <button id="prev" class="btn" disabled>&lsaquo; Prev</button>
     <button id="next" class="btn" disabled>Next &rsaquo;</button>
@@ -62,9 +64,16 @@ SPDX-FileCopyrightText: 2026 Leon Priest <github.com/7h3v01d>
 
     <main id="reader">
       <iframe id="page" title="Reader" referrerpolicy="no-referrer"></iframe>
-      <div id="empty" class="empty">No book open. Launch with a path, or POST one to <code>/api/open</code>.</div>
+      <div id="empty" class="empty">
+        <div>
+          <p>No book open.</p>
+          <p class="muted">Click <strong>Open</strong>, or drag an <code>.epub</code> anywhere onto this window.</p>
+        </div>
+      </div>
     </main>
   </div>
+
+  <div id="dropzone" hidden><div class="drop-inner">Drop an <code>.epub</code> to open</div></div>
 
   <footer id="status"><span id="status-text">Ready</span></footer>
 

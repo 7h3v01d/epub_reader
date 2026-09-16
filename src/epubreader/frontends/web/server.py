@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,6 +23,7 @@ from ...core.exceptions import NavigationError, ResourceNotFoundError
 from .frontend import WebFrontend
 
 _STATIC = Path(__file__).parent / "static"
+_MAX_UPLOAD_BYTES = 256 * 1024 * 1024  # 256 MB — generous for an EPUB, bounds memory
 
 
 class GoToBody(BaseModel):
@@ -104,6 +105,20 @@ def create_app(frontend: WebFrontend) -> FastAPI:
             return frontend.open_path(body.path)
         except Exception as exc:  # noqa: BLE001 - report open failures as 400
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/upload")
+    async def upload(request: Request, name: str = "book.epub") -> dict:
+        # Raw-body upload (no multipart dependency): the browser POSTs the File
+        # directly as the request body, with its name in the query string.
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=400, detail="empty upload")
+        if len(data) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="file too large")
+        try:
+            return frontend.open_bytes(data, name)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"could not open EPUB: {exc}")
 
     @app.post("/api/next")
     def go_next() -> dict:

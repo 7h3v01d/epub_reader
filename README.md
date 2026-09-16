@@ -93,6 +93,11 @@ run_web.bat                       :: serves at http://127.0.0.1:8000
 run_web.bat "C:\path\to\book.epub"
 ```
 
+In the web reader you can also open a book from the browser — click **Open** to
+pick an `.epub`, or drag one anywhere onto the window. The file is uploaded to
+the local server, written to a private temp file, and opened through the same
+engine; the previous upload's temp file is cleaned up automatically.
+
 From any shell, without the .bat helpers:
 
 ```bash
