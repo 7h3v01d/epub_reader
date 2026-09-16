@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!--
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 Leon Priest <github.com/7h3v01d>
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>epubreader</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <span id="brand">epubreader</span>
+    <div class="spacer"></div>
+    <button id="prev" class="btn" disabled>&lsaquo; Prev</button>
+    <button id="next" class="btn" disabled>Next &rsaquo;</button>
+    <div class="spacer"></div>
+    <label class="ctl">Theme
+      <select id="theme">
+        <option value="obsidian">obsidian</option>
+        <option value="sepia">sepia</option>
+        <option value="light">light</option>
+      </select>
+    </label>
+    <label class="ctl">Scale
+      <input id="scale" type="number" min="0.6" max="2.5" step="0.1" value="1.0" />
+    </label>
+    <label class="ctl chk">
+      <input id="scripts" type="checkbox" /> Allow book scripts
+    </label>
+  </header>
+
+  <div id="body">
+    <aside id="sidebar">
+      <nav id="tabs">
+        <button class="tab active" data-tab="contents">Contents</button>
+        <button class="tab" data-tab="search">Search</button>
+        <button class="tab" data-tab="bookmarks">Bookmarks</button>
+      </nav>
+
+      <section class="panel active" data-panel="contents">
+        <ul id="toc"></ul>
+      </section>
+
+      <section class="panel" data-panel="search">
+        <input id="q" type="search" placeholder="Search book…" />
+        <div class="opts">
+          <label><input id="q-case" type="checkbox" /> Match case</label>
+          <label><input id="q-word" type="checkbox" /> Whole word</label>
+        </div>
+        <div id="q-count" class="muted"></div>
+        <ul id="results"></ul>
+      </section>
+
+      <section class="panel" data-panel="bookmarks">
+        <button id="add-bookmark" class="btn wide">Bookmark this page</button>
+        <ul id="bookmarks"></ul>
+      </section>
+    </aside>
+
+    <main id="reader">
+      <iframe id="page" title="Reader" referrerpolicy="no-referrer"></iframe>
+      <div id="empty" class="empty">No book open. Launch with a path, or POST one to <code>/api/open</code>.</div>
+    </main>
+  </div>
+
+  <footer id="status"><span id="status-text">Ready</span></footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

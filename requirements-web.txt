@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Dependencies for the web frontend (epubreader.frontends.web).
+# The engine remains dependency-free; only this frontend needs these.
+fastapi>=0.110
+uvicorn[standard]>=0.29

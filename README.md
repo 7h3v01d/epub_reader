@@ -7,8 +7,9 @@ SPDX-FileCopyrightText: 2026 Leon Priest <github.com/7h3v01d>
 
 A modular EPUB reading engine with a replaceable UI. The engine parses and
 serves EPUB content and knows nothing about any toolkit; a thin frontend layer
-adapts it to a concrete UI. A PyQt6 + QtWebEngine reader ships today; a web or
-CLI frontend drops in without touching the engine.
+adapts it to a concrete UI. **Two frontends ship on the same engine** — a PyQt6 +
+QtWebEngine desktop reader and a FastAPI + vanilla-JS web reader — which is the
+proof that the seam works: a CLI or any other UI drops in the same way.
 
 - **Author:** Leon Priest (<github.com/7h3v01d>)
 - **License:** Apache-2.0
@@ -30,8 +31,9 @@ epubreader/
   render.py    shared theme / stylesheet injection (any frontend reuses) (stdlib only)
   frontend/    ReaderFrontend — the abstract contract (the replaceable seam)
   frontends/
-    qt/        the PyQt6 + QtWebEngine reader (today's UI)
-    ...        web / cli / … drop in here
+    qt/        the PyQt6 + QtWebEngine desktop reader
+    web/       the FastAPI + vanilla-JS web reader
+    ...        cli / … drop in here
 ```
 
 Each layer imports only downward. `core` has **zero** Qt imports; importing the
@@ -76,18 +78,31 @@ That single indirection is what keeps the engine unaware of the UI.
 
 ## Running it (Windows)
 
+**Desktop (PyQt6):**
+
 ```bat
-setup_venv.bat        :: creates .venv, installs PyQt6 + PyQt6-WebEngine + pytest
-run.bat               :: launches the reader
+setup_venv.bat        :: creates .venv, installs both frontends' deps + pytest
+run.bat               :: launches the desktop reader
 run.bat "C:\path\to\book.epub"   :: launch and open a book straight away
+```
+
+**Web (FastAPI):**
+
+```bat
+run_web.bat                       :: serves at http://127.0.0.1:8000
+run_web.bat "C:\path\to\book.epub"
 ```
 
 From any shell, without the .bat helpers:
 
 ```bash
-export PYTHONPATH=src          # set PYTHONPATH=src  on Windows
-python main.py [book.epub]
+export PYTHONPATH=src                          # set PYTHONPATH=src  on Windows
+python main.py [book.epub]                      # desktop
+python -m epubreader.frontends.web.app [book.epub] [--host H --port P]   # web
 ```
+
+Reading position and bookmarks live in one JSON state file, so a book bookmarked
+in the desktop reader shows the same bookmarks in the web reader.
 
 ## Running the tests
 
@@ -96,27 +111,36 @@ export PYTHONPATH=src
 python -m pytest
 ```
 
-The engine and session are covered by a fast, Qt-free suite (50 tests). The Qt
-frontend is exercised by hand — it needs a display and the QtWebEngine binaries,
-so it is intentionally left out of the headless suite.
+The engine, session, frontend contract, and the web routes are covered by a
+fast, headless suite (69 tests; the web tests use FastAPI's `TestClient`, no
+browser). The Qt window is exercised by hand — it needs a display and the
+QtWebEngine binaries — so it is intentionally left out of the suite. The web
+tests skip themselves automatically if FastAPI isn't installed.
 
 ---
 
-## Adding a web frontend (worked example)
+## The web frontend, as the worked example
 
-1. Subclass `ReaderFrontend`.
-2. Serve two kinds of route:
-   - `GET /resource/<key>` → `session.book.read_resource(key)`, passed through
-     `epubreader.render.inject_stylesheet(...)` for HTML sections so the theme
-     is applied. This is the `key → transport` mapping.
-   - navigation endpoints that call `session.next_section()`,
-     `session.go_to_key(...)`, etc.
-3. Implement the five presentation methods (`display_section`, `display_toc`,
-   `display_metadata`, `report_error`, `run`). The base class has already wired
-   them to the session's callbacks for you.
+`frontends/web/` is the reference for adding any HTTP UI, and shows the seam is
+real rather than aspirational:
 
-You write no parsing, no position tracking, and no persistence — those are the
-engine's job and are shared across every frontend.
+1. `WebFrontend` subclasses `ReaderFrontend` — the **same** contract the Qt
+   window implements. Its `display_*` callbacks record the latest state into a
+   view-model; the HTTP routes serialise that on demand. (Push contract meets
+   pull transport: a request that calls `session.next_section()` triggers
+   `display_section` synchronously, and the same response returns the result.)
+2. `GET /resource/<key>` is the `key → transport` mapping: it serves
+   `session.book.read_resource(key)` through `render.inject_stylesheet(...)` for
+   HTML, so relative links inside the book resolve correctly because the URL
+   path mirrors the archive path exactly.
+3. Navigation, search, and bookmark endpoints just call the corresponding
+   session methods. No parsing, position tracking, or persistence is
+   reimplemented — those are the engine's job, shared across every frontend.
+
+A `find`-based search highlight and scroll-driven progress reporting are wired
+through the same one-shot `highlight` field and `report_progress` the Qt view
+uses. To add a CLI next, the pattern is identical: implement the five methods,
+map `key` to direct bytes.
 
 ### The contract
 
@@ -154,8 +178,16 @@ the TOC tree underneath a user who has expanded or selected a node.
   - a hardened page with JavaScript **off by default** (opt-in per book via the
     toolbar), and remote content, local file access, plugins, and screen capture
     all disabled.
-- **No script-based progress.** Reading position is read from the view's own
-  scroll geometry, so progress tracking never requires running page scripts.
+- **Sandboxed web renderer.** The same posture ports to the browser: book
+  content is served into a `sandbox`ed `<iframe>` (`allow-same-origin` so the
+  shell can read scroll position and run `find`, but **no** `allow-scripts` until
+  the reader opts in), and every `/resource` response carries a strict
+  Content-Security-Policy (`default-src 'none'`; same-origin images/CSS/fonts and
+  `data:` only; `script-src 'none'` by default). That CSP is the web analogue of
+  the Qt request interceptor — book content cannot reach the network.
+- **No script-based progress.** Reading position is read from scroll geometry —
+  the view's own in Qt, the iframe's in the browser — so progress tracking never
+  requires running page scripts.
 
 The default stance is closed; the user opts in to book scripts explicitly and
 per-session.
@@ -165,6 +197,8 @@ per-session.
 ## Layout notes
 
 - `src/` layout; every source file carries an SPDX Apache-2.0 header.
-- Persistence is JSON (progress + settings) written atomically (temp + replace).
-- The engine has no third-party dependencies; only the Qt frontend needs
-  `requirements.txt`.
+- Persistence is JSON (progress + settings + bookmarks) written atomically
+  (temp + replace), shared across frontends.
+- The engine has no third-party dependencies. The desktop frontend needs
+  `requirements.txt` (PyQt6); the web frontend needs `requirements-web.txt`
+  (FastAPI + uvicorn). Neither is required to use the other.

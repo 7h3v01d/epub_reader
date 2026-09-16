@@ -1,0 +1,140 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 Leon Priest <github.com/7h3v01d>
+ * House design system — Obsidian shell, flat zero-radius controls, JetBrains Mono.
+ */
+:root {
+  --obsidian: #0b0f14;
+  --panel: #11161d;
+  --border: #1e2831;
+  --teal: #2fd6c3;
+  --phosphor: #4be08a;
+  --amber: #ffb454;
+  --red: #ff6b6b;
+  --text: #c8d3da;
+  --muted: #6b7a86;
+  --font: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--obsidian);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+body { display: flex; flex-direction: column; }
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+#brand { color: var(--teal); letter-spacing: 0.08em; text-transform: uppercase; font-size: 12px; }
+.spacer { flex: 1 1 auto; }
+
+.btn {
+  background: var(--obsidian);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--teal); color: var(--teal); }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn.wide { width: 100%; margin-bottom: 8px; }
+
+.ctl { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.ctl.chk { gap: 5px; }
+select, input[type="number"], input[type="search"] {
+  background: var(--obsidian);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 12px;
+}
+input[type="number"] { width: 60px; }
+
+#body { flex: 1 1 auto; display: flex; min-height: 0; }
+
+#sidebar {
+  flex: 0 0 300px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+#tabs { display: flex; border-bottom: 1px solid var(--border); }
+.tab {
+  flex: 1;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 4px;
+  font-family: inherit;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+.tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+
+.panel { display: none; padding: 10px; overflow: auto; min-height: 0; flex: 1; }
+.panel.active { display: block; }
+
+ul { list-style: none; margin: 0; padding: 0; }
+#toc li, #results li, #bookmarks li {
+  padding: 6px 8px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+}
+#toc li:hover, #results li:hover, #bookmarks li:hover {
+  background: var(--obsidian);
+  border-left-color: var(--teal);
+}
+#toc li.nested { padding-left: 22px; color: var(--muted); }
+
+#results li .sec { color: var(--amber); display: block; font-size: 11px; }
+#results li mark { background: var(--phosphor); color: var(--obsidian); }
+
+#bookmarks li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#bookmarks li .rm { color: var(--red); border: none; background: none; cursor: pointer; font-family: inherit; }
+
+.opts { display: flex; gap: 12px; margin: 8px 0; color: var(--muted); font-size: 11px; }
+.muted { color: var(--muted); font-size: 11px; margin: 4px 0; }
+
+#reader { flex: 1 1 auto; position: relative; min-width: 0; background: var(--obsidian); }
+#page { width: 100%; height: 100%; border: 0; background: var(--obsidian); }
+.empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); padding: 24px; text-align: center;
+}
+.empty code { color: var(--teal); }
+
+#status {
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding: 5px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+#status.error { color: var(--red); }
