@@ -9,7 +9,15 @@ here is plain data so a web frontend can round-trip the same settings.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
+
+
+def _finite(value: float, default: float) -> float:
+    try:
+        return value if math.isfinite(value) else default
+    except TypeError:
+        return default
 
 
 @dataclass
@@ -26,11 +34,12 @@ class ReaderSettings:
     inject_theme: bool = True
 
     def clamped(self) -> "ReaderSettings":
+        theme = self.theme if isinstance(self.theme, str) else "obsidian"
         return ReaderSettings(
-            theme=self.theme if self.theme in {"obsidian", "sepia", "light"} else "obsidian",
-            font_scale=min(2.5, max(0.6, self.font_scale)),
-            margin_em=min(8.0, max(0.0, self.margin_em)),
-            line_height=min(2.4, max(1.0, self.line_height)),
+            theme=theme if theme in {"obsidian", "sepia", "light"} else "obsidian",
+            font_scale=min(2.5, max(0.6, _finite(self.font_scale, 1.0))),
+            margin_em=min(8.0, max(0.0, _finite(self.margin_em, 2.0))),
+            line_height=min(2.4, max(1.0, _finite(self.line_height, 1.6))),
             allow_scripts=bool(self.allow_scripts),
             inject_theme=bool(self.inject_theme),
         )
@@ -40,5 +49,7 @@ class ReaderSettings:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ReaderSettings":
+        if not isinstance(data, dict):
+            return cls()
         known = {f: data[f] for f in cls.__dataclass_fields__ if f in data}
         return cls(**known).clamped()

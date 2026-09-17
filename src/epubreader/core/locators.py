@@ -11,7 +11,22 @@ the Qt frontend and a future web frontend persist position identically.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+
+
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass(frozen=True)
@@ -25,8 +40,14 @@ class Locator:
     fragment: str = ""
 
     def __post_init__(self) -> None:
-        clamped = 0.0 if self.progress < 0 else 1.0 if self.progress > 1 else self.progress
-        object.__setattr__(self, "progress", clamped)
+        p = self.progress
+        # NaN/inf slip past ordinary < / > comparisons (both are False), so
+        # they must be rejected explicitly or they poison persisted state.
+        if not math.isfinite(p) or p < 0:
+            p = 0.0
+        elif p > 1:
+            p = 1.0
+        object.__setattr__(self, "progress", p)
 
     def to_dict(self) -> dict:
         return {
@@ -37,10 +58,14 @@ class Locator:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Locator":
+        # Persistence is untrusted: coerce each field, falling back rather than
+        # raising on a hostile or malformed value.
+        if not isinstance(data, dict):
+            return cls(spine_index=0)
         return cls(
-            spine_index=int(data.get("spine_index", 0)),
-            progress=float(data.get("progress", 0.0)),
-            fragment=str(data.get("fragment", "")),
+            spine_index=_safe_int(data.get("spine_index"), 0),
+            progress=_safe_float(data.get("progress"), 0.0),
+            fragment=str(data.get("fragment", "")) if data.get("fragment") is not None else "",
         )
 
 

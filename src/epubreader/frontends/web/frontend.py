@@ -73,11 +73,19 @@ class WebFrontend(ReaderFrontend):
 
     def run(self, host: str = "127.0.0.1", port: int = 8000) -> int:
         """Serve the reader. Imported lazily so tests need no uvicorn."""
+        import secrets
+
         import uvicorn
 
         from .server import create_app
 
-        uvicorn.run(create_app(self), host=host, port=port, log_level="info")
+        token = secrets.token_urlsafe(24)
+        # Host/Origin pinning stays on for every bind — for a remote bind the
+        # server's own host is added to the allow-list, so DNS-rebinding and
+        # cross-origin writes are still refused rather than silently disabled.
+        allowed = {"127.0.0.1", "localhost", "::1", host.lower()}
+        app = create_app(self, token=token, allowed_hosts=allowed)
+        uvicorn.run(app, host=host, port=port, log_level="info")
         return 0
 
     # ---- operations the routes call (all session access is locked) ------- #
@@ -88,20 +96,29 @@ class WebFrontend(ReaderFrontend):
             return self._state_locked()
 
     def open_bytes(self, data: bytes, name: str = "book.epub") -> dict:
-        """Open a book from uploaded bytes (browser file picker / drag-drop).
+        """Open a book from uploaded bytes (kept for direct/programmatic use).
 
-        The engine reads an EPUB from a filesystem path and streams resources
-        from it lazily, so the bytes are written to a private temp file that
-        lives as long as the book is open. The previous upload's temp directory
-        is removed once the new book has been opened (which closes the old one).
+        The HTTP upload route streams to disk instead (see prepare/adopt below);
+        this convenience path buffers, so prefer the streaming lifecycle for
+        untrusted network input.
         """
         with self._lock:
-            new_dir = tempfile.mkdtemp(prefix="epubreader-")
-            dest = Path(new_dir) / _safe_filename(name)
-            dest.write_bytes(data)
+            new_dir, dest = self.prepare_upload(name)
+            Path(dest).write_bytes(data)
+            return self.adopt_upload(new_dir, dest)
+
+    def prepare_upload(self, name: str) -> tuple[str, str]:
+        """Create a private temp dir + destination path for an incoming upload."""
+        new_dir = tempfile.mkdtemp(prefix="epubreader-")
+        dest = str(Path(new_dir) / _safe_filename(name))
+        return new_dir, dest
+
+    def adopt_upload(self, new_dir: str, dest: str) -> dict:
+        """Open the streamed file; on success swap it in and clean up the old one."""
+        with self._lock:
             old_dir = self._temp_dir
             try:
-                result = self.open_path(str(dest))
+                result = self.open_path(dest)
             except Exception:
                 shutil.rmtree(new_dir, ignore_errors=True)
                 raise
@@ -109,6 +126,9 @@ class WebFrontend(ReaderFrontend):
             if old_dir:
                 shutil.rmtree(old_dir, ignore_errors=True)
             return result
+
+    def abort_upload(self, new_dir: str) -> None:
+        shutil.rmtree(new_dir, ignore_errors=True)
 
     def state(self) -> dict:
         with self._lock:
@@ -197,10 +217,16 @@ class WebFrontend(ReaderFrontend):
         return data, media
 
     def script_policy(self) -> str:
-        """CSP ``script-src`` for book content, honouring the deny-first default."""
-        with self._lock:
-            allow = self.session.is_open and self.session.settings().allow_scripts
-        return "'self' 'unsafe-inline'" if allow else "'none'"
+        """CSP ``script-src`` for book content — always denied on the web.
+
+        Book resources are served from the *same origin* as the reader shell, so
+        an ``allow-same-origin`` iframe that also ran scripts could reach the
+        parent document and the control-plane API. The web frontend therefore
+        never executes book JavaScript; the ``allow_scripts`` setting only
+        affects the desktop frontend, whose renderer is an isolated,
+        network-blocked native profile with no parent document to escape to.
+        """
+        return "'none'"
 
     # ---- internals ------------------------------------------------------- #
     def _state_locked(self) -> dict:
@@ -248,6 +274,8 @@ def _section_payload(section: RenderedSection) -> dict:
         "is_first": section.is_first,
         "is_last": section.is_last,
         "highlight": section.highlight,
+        "highlight_ordinal": section.highlight_ordinal,
+        "progress": section.progress,
     }
 
 

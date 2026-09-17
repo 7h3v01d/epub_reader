@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtCore import QUrl, pyqtSignal
-from PyQt6.QtWebEngineCore import QWebEngineProfile
+from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from ...core.book import Book
@@ -47,6 +47,8 @@ class ReaderView(QWebEngineView):
         # search hit). findText needs no page scripting, so it keeps the
         # deny-first posture intact.
         self._pending_find = ""
+        self._pending_ordinal = 0
+        self._pending_progress = 0.0
         self.loadFinished.connect(self._on_load_finished)
 
     # ---- configuration --------------------------------------------------- #
@@ -60,13 +62,35 @@ class ReaderView(QWebEngineView):
     # ---- rendering ------------------------------------------------------- #
     def show_section(self, section: RenderedSection) -> None:
         self._pending_find = section.highlight
+        self._pending_ordinal = section.highlight_ordinal
+        # A fragment target wins over a stored fraction; otherwise restore the
+        # saved reading position within the section.
+        self._pending_progress = 0.0 if section.fragment else section.progress
         self.load(url_for_key(section.key, section.fragment))
 
     def _on_load_finished(self, ok: bool) -> None:
-        # An empty term clears any previous highlight; a non-empty one selects
-        # and scrolls to the first match.
-        if ok:
-            self._page.findText(self._pending_find)
+        if not ok:
+            return
+        if self._pending_find:
+            # findText advances the selection each call; step to the specific
+            # occurrence this hit referred to. An empty term clears highlights.
+            for _ in range(self._pending_ordinal + 1):
+                self._page.findText(self._pending_find)
+        elif self._pending_progress > 0:
+            self._restore_scroll(self._pending_progress)
+        self._pending_progress = 0.0
+
+    def _restore_scroll(self, fraction: float) -> None:
+        # Scroll via an application-world script: this is app-initiated, so it
+        # runs even though book-content JavaScript is disabled — book scripts
+        # stay blocked, the deny-first posture is preserved.
+        frac = max(0.0, min(1.0, fraction))
+        script = (
+            "(function(){var e=document.scrollingElement||document.documentElement;"
+            "var m=e.scrollHeight-window.innerHeight;"
+            f"if(m>0){{window.scrollTo(0,m*{frac});}}}})();"
+        )
+        self._page.runJavaScript(script, QWebEngineScript.ScriptWorldId.ApplicationWorld)
 
     # ---- progress (no page scripting required) --------------------------- #
     def _on_scroll(self, *_: object) -> None:

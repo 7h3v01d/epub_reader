@@ -117,7 +117,7 @@ python -m pytest
 ```
 
 The engine, session, frontend contract, and the web routes are covered by a
-fast, headless suite (69 tests; the web tests use FastAPI's `TestClient`, no
+fast, headless suite (105 tests; the web tests use FastAPI's `TestClient`, no
 browser). The Qt window is exercised by hand — it needs a display and the
 QtWebEngine binaries — so it is intentionally left out of the suite. The web
 tests skip themselves automatically if FastAPI isn't installed.
@@ -183,27 +183,49 @@ the TOC tree underneath a user who has expanded or selected a node.
   - a hardened page with JavaScript **off by default** (opt-in per book via the
     toolbar), and remote content, local file access, plugins, and screen capture
     all disabled.
-- **Sandboxed web renderer.** The same posture ports to the browser: book
-  content is served into a `sandbox`ed `<iframe>` (`allow-same-origin` so the
-  shell can read scroll position and run `find`, but **no** `allow-scripts` until
-  the reader opts in), and every `/resource` response carries a strict
-  Content-Security-Policy (`default-src 'none'`; same-origin images/CSS/fonts and
-  `data:` only; `script-src 'none'` by default). That CSP is the web analogue of
-  the Qt request interceptor — book content cannot reach the network.
+- **Sandboxed web renderer.** Book content is served into a `sandbox`ed
+  `<iframe>` (`allow-same-origin` so the shell can read scroll position and run
+  `find`), and every `/resource` response carries a strict Content-Security-Policy
+  (`default-src 'none'`; same-origin images/CSS/fonts and `data:` only). Because
+  the iframe shares an origin with the reader shell, the web frontend **never**
+  runs book JavaScript (`script-src 'none'`, no `allow-scripts`) — otherwise a
+  book script could reach the parent document and the control-plane API. The
+  `allow_scripts` setting affects only the desktop renderer, which is an
+  isolated, network-blocked native profile with no parent to escape to.
+- **Fail-closed script permission.** Opening any book resets scripts off, so a
+  trusted book's opt-in can never be inherited by an unrelated (hostile) one.
+- **Local control plane has a trust boundary.** The web server issues a
+  per-launch capability token that the shell must present on every `/api/`
+  request, validates the `Host` header (anti-DNS-rebinding), and rejects
+  cross-origin state-changing requests — these stay enforced for a remote bind
+  too. A non-loopback bind is refused unless `--allow-remote` is passed, and even
+  then is treated as convenience rather than authentication (the token is
+  embedded in the served page). The HTTP surface has no server-side file-open
+  route; the browser only uploads book bytes.
+- **Hostile-archive budgets.** EPUBs are preflighted for file size and declared
+  entry count *before* the zip is parsed, then for member count, per-member and
+  total uncompressed size, and compression ratio; every resource read is streamed
+  under a size cap. Uploads stream straight to disk under a size cap.
+- **Untrusted persistence.** The state file is treated as untrusted input at
+  every level: a corrupt or wrong-typed document is quarantined, and individual
+  fields (a hostile `spine_index`, a non-string `theme`) are coerced rather than
+  crashing startup. Bookmark writes are atomic per-bookmark under a cross-process
+  lock, so a desktop and a web reader adding bookmarks concurrently keep both.
+- **Content-addressed identity.** A book's storage id folds in a fingerprint of
+  its archive, so two books sharing a `dc:identifier` don't merge progress.
 - **No script-based progress.** Reading position is read from scroll geometry —
   the view's own in Qt, the iframe's in the browser — so progress tracking never
-  requires running page scripts.
+  requires running book scripts.
 
-The default stance is closed; the user opts in to book scripts explicitly and
-per-session.
+The default stance is closed throughout.
 
 ---
 
 ## Layout notes
 
 - `src/` layout; every source file carries an SPDX Apache-2.0 header.
-- Persistence is JSON (progress + settings + bookmarks) written atomically
-  (temp + replace), shared across frontends.
+- Persistence is JSON (progress + settings + bookmarks) written via a locked,
+  atomic read-modify-write, shared safely across frontends.
 - The engine has no third-party dependencies. The desktop frontend needs
   `requirements.txt` (PyQt6); the web frontend needs `requirements-web.txt`
   (FastAPI + uvicorn). Neither is required to use the other.

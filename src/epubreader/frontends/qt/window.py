@@ -181,10 +181,22 @@ class ReaderWindow(QMainWindow, ReaderFrontend):
         self._status.setText(f"Opening {Path(path).name} …")
         self._prev_act.setEnabled(False)
         self._next_act.setEnabled(False)
-        open_book_async(path, self._on_book_opened, self.report_error)
+        # Tag each open with a generation so a slow earlier open finishing after
+        # a later one can't replace the user's most recent selection.
+        self._open_generation = getattr(self, "_open_generation", 0) + 1
+        generation = self._open_generation
+        open_book_async(
+            path,
+            lambda book: self._on_book_opened(book, generation),
+            self.report_error,
+        )
 
-    def _on_book_opened(self, book) -> None:
+    def _on_book_opened(self, book, generation: int = 0) -> None:
         # Runs on the GUI thread: safe to touch the view/session.
+        if generation and generation != getattr(self, "_open_generation", generation):
+            # A newer open superseded this one; discard the stale result.
+            book.close()
+            return
         self._view.set_book(book)
         self.session.adopt_book(book)
         # Bookmarks are book-scoped; refresh the panel now the book is loaded.
@@ -222,6 +234,11 @@ class ReaderWindow(QMainWindow, ReaderFrontend):
         creators = ", ".join(metadata.creators)
         title = metadata.title + (f" — {creators}" if creators else "")
         self.setWindowTitle(f"{title}  ·  epubreader")
+        # The session resets scripts off for every newly opened book (fail-
+        # closed); reflect that in the toolbar without re-pushing settings.
+        self._scripts_box.blockSignals(True)
+        self._scripts_box.setChecked(self.session.settings().allow_scripts)
+        self._scripts_box.blockSignals(False)
 
     def report_error(self, message: str) -> None:
         self._status.setObjectName("ErrorLabel")

@@ -4,10 +4,10 @@
 
 const $ = (id) => document.getElementById(id);
 const page = $("page");
-let allowScripts = false;
 
 async function api(method, url, body) {
   const opts = { method, headers: {} };
+  if (window.API_TOKEN) opts.headers["X-API-Token"] = window.API_TOKEN;
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -30,15 +30,16 @@ function showSection(section) {
     return;
   }
   $("empty").style.display = "none";
-  // Deny-first: book content is sandboxed. allow-same-origin lets the shell
-  // read scroll position and run find(); scripts stay off unless opted in.
-  page.setAttribute(
-    "sandbox",
-    allowScripts ? "allow-same-origin allow-scripts" : "allow-same-origin"
-  );
+  // Deny-first: book content is sandboxed with allow-same-origin (so the shell
+  // can read scroll position and run find) but never allow-scripts — book
+  // JavaScript never runs on the web frontend, which shares an origin with the
+  // reader control plane.
+  page.setAttribute("sandbox", "allow-same-origin");
   const frag = section.fragment ? "#" + encodeURIComponent(section.fragment) : "";
   const parts = section.key.split("/").map(encodeURIComponent).join("/");
   page._highlight = section.highlight || "";
+  page._ordinal = section.highlight_ordinal || 0;
+  page._progress = section.fragment ? 0 : (section.progress || 0);
   page.src = "/resource/" + parts + frag;
 
   $("prev").disabled = section.is_first;
@@ -50,11 +51,25 @@ page.addEventListener("load", () => {
   let win;
   try { win = page.contentWindow; } catch (_e) { return; }
   if (!win) return;
-  // Apply a pending search highlight once the section is in the DOM.
+  // Apply a pending search highlight once the section is in the DOM. find()
+  // advances the selection each call, so stepping it (ordinal + 1) times lands
+  // on the specific occurrence this hit refers to.
   if (page._highlight) {
-    try { win.find(page._highlight, false, false, true); } catch (_e) { /* find unsupported */ }
+    try {
+      for (let i = 0; i <= (page._ordinal || 0); i++) {
+        win.find(page._highlight, false, false, true);
+      }
+    } catch (_e) { /* find unsupported */ }
     page._highlight = "";
+  } else if (page._progress > 0) {
+    // Restore reading position: scroll to the stored fraction of the section.
+    try {
+      const el = win.document.scrollingElement || win.document.documentElement;
+      const max = el.scrollHeight - win.innerHeight;
+      if (max > 0) el.scrollTop = max * page._progress;
+    } catch (_e) { /* cross-origin or detached */ }
   }
+  page._progress = 0;
   // Report scroll fraction back to the session (no book scripting needed).
   win.addEventListener("scroll", debounce(() => {
     try {
@@ -77,8 +92,6 @@ function applyState(state) {
   if (state.settings) {
     $("theme").value = state.settings.theme;
     $("scale").value = state.settings.font_scale;
-    allowScripts = !!state.settings.allow_scripts;
-    $("scripts").checked = allowScripts;
   }
   if (state.error) setStatus(state.error, true);
   showSection(state.section);
@@ -105,8 +118,11 @@ async function uploadFile(file) {
   if (!/\.epub$/i.test(file.name)) { setStatus("Not an .epub file", true); return; }
   setStatus(`Opening ${file.name} …`);
   try {
+    const headers = {};
+    if (window.API_TOKEN) headers["X-API-Token"] = window.API_TOKEN;
     const res = await fetch("/api/upload?name=" + encodeURIComponent(file.name), {
       method: "POST",
+      headers,
       body: file,
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
@@ -184,7 +200,7 @@ async function pushSettings() {
   const body = {
     theme: $("theme").value,
     font_scale: parseFloat($("scale").value) || 1.0,
-    allow_scripts: $("scripts").checked,
+    allow_scripts: false,     // web frontend never runs book scripts
   };
   await act(api("POST", "/api/settings", body));
 }
@@ -228,7 +244,6 @@ $("prev").onclick = () => act(api("POST", "/api/prev"));
 $("next").onclick = () => act(api("POST", "/api/next"));
 $("theme").onchange = pushSettings;
 $("scale").onchange = pushSettings;
-$("scripts").onchange = pushSettings;
 $("q").oninput = runSearch;
 $("q-case").onchange = runSearch;
 $("q-word").onchange = runSearch;

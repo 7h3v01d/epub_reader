@@ -12,6 +12,7 @@ a frontend maps ``section.key`` to whatever URL its renderer speaks.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -51,6 +52,12 @@ class RenderedSection:
     #: a search hit). Empty for ordinary navigation. Toolkit-neutral: Qt maps it
     #: to ``findText``, a browser to its native find.
     highlight: str = ""
+    #: Which occurrence of ``highlight`` to reveal (0-based) — a frontend steps
+    #: to the Nth match so distinct search hits for the same word land correctly.
+    highlight_ordinal: int = 0
+    #: Stored reading position within this section (0..1). A frontend restores
+    #: scroll to it after load when there is no fragment to honour instead.
+    progress: float = 0.0
 
     @property
     def is_last(self) -> bool:
@@ -71,6 +78,7 @@ class ReaderSession:
         self._settings = store.get_settings()
         self._bookmarks: list[Bookmark] = []
         self._pending_highlight: str = ""
+        self._pending_ordinal: int = 0
         self._section_listeners: list[SectionListener] = []
         self._error_listeners: list[ErrorListener] = []
         self._book_opened_listeners: list[BookOpenedListener] = []
@@ -111,9 +119,12 @@ class ReaderSession:
         This is deliberately synchronous and Qt-free; a frontend that needs
         responsiveness opens the :class:`Book` on its own worker thread and
         then calls :meth:`adopt_book` on the GUI thread instead.
+
+        Transactional: the new book is opened *before* the current one is
+        touched, so a failed open leaves the currently open book intact.
         """
-        self.close()
-        self.adopt_book(Book.open(path), resume=resume)
+        book = Book.open(path)          # may raise — current book still open
+        self.adopt_book(book, resume=resume)
 
     def adopt_book(self, book: Book, *, resume: bool = True) -> None:
         """Adopt an already-opened :class:`Book` and emit its first section.
@@ -125,6 +136,12 @@ class ReaderSession:
         if self._book is not None and self._book is not book:
             self.close()
         self._book = book
+        # Fail-closed: every newly opened book starts with scripts disabled,
+        # regardless of a previously persisted preference, so a trusted book's
+        # opt-in can never be inherited by an unrelated (possibly hostile) one.
+        if self._settings.allow_scripts:
+            self._settings = dataclasses.replace(self._settings, allow_scripts=False)
+            self._store.set_settings(self._settings)
         stored = self._store.get_locator(book.book_id) if resume else None
         self._locator = stored or Locator(spine_index=0)
         self._clamp_locator()
@@ -178,6 +195,8 @@ class ReaderSession:
             fragment=self._locator.fragment,
             total_sections=len(spine),
             highlight=self._pending_highlight,
+            highlight_ordinal=self._pending_ordinal,
+            progress=self._locator.progress,
         )
 
     # ---- navigation ------------------------------------------------------ #
@@ -234,12 +253,14 @@ class ReaderSession:
     def go_to_search_hit(self, hit: SearchHit) -> None:
         """Navigate to a hit's section and ask the frontend to highlight it."""
         self._pending_highlight = hit.query
+        self._pending_ordinal = hit.ordinal
         try:
             self.go_to_spine(hit.spine_index)
         finally:
             # The highlight is one-shot: it rode along with the emitted section
             # and must not leak into later re-renders (e.g. a settings change).
             self._pending_highlight = ""
+            self._pending_ordinal = 0
 
     # ---- bookmarks ------------------------------------------------------- #
     def bookmarks(self) -> list[Bookmark]:
@@ -256,19 +277,17 @@ class ReaderSession:
             label=text,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
-        self._bookmarks.append(bookmark)
-        self._store.set_bookmarks(book.book_id, self._bookmarks)
+        # Atomic append at the store, then refresh from it — so a concurrent
+        # reader's bookmarks are preserved rather than overwritten by our cache.
+        self._bookmarks = self._store.add_bookmark(book.book_id, bookmark)
         return bookmark
 
     def remove_bookmark(self, bookmark: Bookmark | str) -> bool:
         """Remove a bookmark (by object or id). Returns whether one was removed."""
         target = bookmark.id if isinstance(bookmark, Bookmark) else str(bookmark)
-        before = len(self._bookmarks)
-        self._bookmarks = [b for b in self._bookmarks if b.id != target]
-        if len(self._bookmarks) != before:
-            self._store.set_bookmarks(self.book.book_id, self._bookmarks)
-            return True
-        return False
+        before = {b.id for b in self._bookmarks}
+        self._bookmarks = self._store.remove_bookmark(self.book.book_id, target)
+        return target in before
 
     def go_to_bookmark(self, bookmark: Bookmark) -> None:
         loc = bookmark.locator

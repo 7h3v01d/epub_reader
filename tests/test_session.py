@@ -134,11 +134,12 @@ def test_json_store_round_trip(tmp_path, epub3_path):
     session = ReaderSession(store)
     session.open(epub3_path)
     session.go_to_spine(1)
+    book_id = session.book.book_id
     session.close()
     assert store_path.is_file()
 
     reopened = JsonProgressStore(store_path)
-    loc = reopened.get_locator("urn:uuid:epub3-fixture-0001")
+    loc = reopened.get_locator(book_id)
     assert loc is not None and loc.spine_index == 1
 
 

@@ -75,7 +75,7 @@ def test_book_id_falls_back_to_hash_without_identifier(tmp_path):
         zf.writestr("content.opf", opf)
         zf.writestr("c1.xhtml", "<html><body>x</body></html>")
     with Book.open(p) as book:
-        assert book.book_id.startswith("sha1:")
+        assert book.book_id.startswith("sha256:")
 
 
 def test_not_a_zip_raises(tmp_path):
