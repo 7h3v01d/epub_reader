@@ -199,6 +199,111 @@ def test_declared_entry_count_preflight(tmp_path, epub3_path, monkeypatch):
         Book.open(epub3_path)
 
 
+# ---- 0.6 review: lying-EOCD count can't force ZipFile allocation --------- #
+def test_lying_eocd_rejected_before_zipfile(tmp_path, monkeypatch):
+    import struct
+    import zipfile
+
+    p = tmp_path / "many.zip"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("META-INF/container.xml", b"<x/>")
+        for i in range(Book.MAX_FILE_COUNT + 10):
+            zf.writestr(f"f{i}.txt", b"")
+    raw = bytearray(p.read_bytes())
+    idx = raw.rfind(b"PK\x05\x06")
+    struct.pack_into("<H", raw, idx + 8, 1)     # entries this disk -> lie
+    struct.pack_into("<H", raw, idx + 10, 1)    # total entries -> lie
+    p.write_bytes(raw)
+
+    import epubreader.core.book as book_mod
+
+    def _boom(*a, **k):
+        raise AssertionError("ZipFile constructed despite the CD preflight")
+
+    monkeypatch.setattr(book_mod.zipfile, "ZipFile", _boom)
+    with pytest.raises(InvalidEpubError):
+        Book.open(p)                            # rejected by CD walk, no ZipFile
+
+
+# ---- 0.6 review: oversized dc:identifier can't bloat the storage key ------ #
+def test_oversized_identifier_yields_small_book_id(tmp_path, epub3_path):
+    import re
+    import zipfile
+
+    with zipfile.ZipFile(epub3_path) as z:
+        data = {n: z.read(n) for n in z.namelist()}
+    opf = next(n for n in data if n.endswith(".opf"))
+    huge = b"<dc:identifier>" + b"X" * (2 * 1024 * 1024) + b"</dc:identifier>"
+    data[opf] = re.sub(rb"<dc:identifier[^>]*>.*?</dc:identifier>", huge, data[opf], count=1)
+    p = tmp_path / "big.epub"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_STORED) as z:
+        for n, c in data.items():
+            z.writestr(n, c)
+    with Book.open(p) as book:
+        assert len(book.book_id) < 80          # fixed-size, not 2 MB
+
+
+# ---- 0.6 review: scroll persistence is throttled -------------------------- #
+def test_progress_persistence_is_throttled(epub3_path):
+    class Counting(MemoryProgressStore):
+        def __init__(self):
+            super().__init__()
+            self.writes = 0
+
+        def set_locator(self, book_id, locator):
+            self.writes += 1
+            super().set_locator(book_id, locator)
+
+    store = Counting()
+    session = ReaderSession(store)
+    session.open(epub3_path)
+    base = store.writes
+    session.report_progress(0.1)
+    session.report_progress(0.2)
+    session.report_progress(0.3)
+    assert store.writes - base <= 1            # rapid scrolls collapse to one
+    session.close()
+    assert store.writes - base >= 1            # but the latest is flushed
+
+
+# ---- 0.6 review: live session sees another session's new bookmark --------- #
+def test_live_session_refreshes_bookmarks(tmp_path, epub3_path):
+    sp = tmp_path / "state.json"
+    a = ReaderSession(JsonProgressStore(sp))
+    b = ReaderSession(JsonProgressStore(sp))
+    a.open(epub3_path)
+    b.open(epub3_path)
+    a.add_bookmark("from A")
+    assert "from A" in [bm.label for bm in b.bookmarks()]
+
+
+# ---- 0.6 review: missing spine resource is rejected at open --------------- #
+def test_missing_spine_resource_rejected(tmp_path):
+    import zipfile
+
+    p = tmp_path / "missing.epub"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?><container xmlns='
+            '"urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+            '<rootfile full-path="content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        z.writestr(
+            "content.opf",
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
+            'version="3.0" unique-identifier="id"><metadata '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            '<dc:identifier id="id">X</dc:identifier><dc:title>T</dc:title></metadata>'
+            '<manifest><item id="c" href="missing.xhtml" '
+            'media-type="application/xhtml+xml"/></manifest>'
+            '<spine><itemref idref="c"/></spine></package>',
+        )
+    with pytest.raises(InvalidEpubError):
+        Book.open(p)
+
+
 # ---- 0.5 review: scroll supersedes a stale anchor ------------------------ #
 def test_scroll_clears_fragment_so_progress_restores(tmp_path, epub3_path):
     sp = tmp_path / "state.json"

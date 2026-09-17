@@ -7,8 +7,8 @@ SPDX-FileCopyrightText: 2026 Leon Priest <github.com/7h3v01d>
 
 A modular EPUB reading engine with a replaceable UI. The engine parses and
 serves EPUB content and knows nothing about any toolkit; a thin frontend layer
-adapts it to a concrete UI. **Two frontends ship on the same engine** — a PyQt6 +
-QtWebEngine desktop reader and a FastAPI + vanilla-JS web reader — which is the
+adapts it to a concrete UI. **Three frontends ship on the same engine** — a PyQt6 +
+QtWebEngine desktop reader, a FastAPI + vanilla-JS web reader, and a terminal reader — which is the
 proof that the seam works: a CLI or any other UI drops in the same way.
 
 - **Author:** Leon Priest (<github.com/7h3v01d>)
@@ -33,7 +33,7 @@ epubreader/
   frontends/
     qt/        the PyQt6 + QtWebEngine desktop reader
     web/       the FastAPI + vanilla-JS web reader
-    ...        cli / … drop in here
+    cli/       the terminal reader (pure standard library)
 ```
 
 Each layer imports only downward. `core` has **zero** Qt imports; importing the
@@ -98,6 +98,23 @@ pick an `.epub`, or drag one anywhere onto the window. The file is uploaded to
 the local server, written to a private temp file, and opened through the same
 engine; the previous upload's temp file is cleaned up automatically.
 
+**Terminal (pure standard library, no dependencies):**
+
+```bat
+run_cli.bat "C:\path\to\book.epub"
+```
+
+```bash
+export PYTHONPATH=src
+python -m epubreader.frontends.cli.app book.epub [--width N] [--no-color]
+```
+
+The terminal reader takes commands (`n`/`p` to turn sections, `t` for contents,
+`/text` to search, `j <n>` to jump to a hit, `b` to bookmark, `h` for help). It
+reuses the engine's own text extractor, so its search matching is identical to
+the engine's. All three readers share one state file, so a book's position and
+bookmarks follow you between the desktop, web, and terminal.
+
 From any shell, without the .bat helpers:
 
 ```bash
@@ -117,7 +134,7 @@ python -m pytest
 ```
 
 The engine, session, frontend contract, and the web routes are covered by a
-fast, headless suite (110 tests; the web tests use FastAPI's `TestClient`, no
+fast, headless suite (126 tests; the web tests use FastAPI's `TestClient`, no
 browser). The Qt window is exercised by hand — it needs a display and the
 QtWebEngine binaries — so it is intentionally left out of the suite. The web
 tests skip themselves automatically if FastAPI isn't installed.
@@ -202,12 +219,21 @@ the TOC tree underneath a user who has expanded or selected a node.
   then is treated as convenience rather than authentication (the token is
   embedded in the served page). The HTTP surface has no server-side file-open
   route; the browser only uploads book bytes.
-- **Hostile-archive budgets.** EPUBs are preflighted for file size and declared
-  entry count *before* the zip is parsed, then for member count, per-member and
-  total uncompressed size, and compression ratio; every resource read is streamed
-  under a size cap. Uploads stream straight to disk under a size cap, and a
-  rejected or cancelled upload's temp file is always cleaned up (the file handle
-  is closed before deletion, and cleanup runs in a `finally`).
+- **Hostile-archive budgets.** Before the zip is parsed, the archive's file size
+  and its central directory are bounded and the directory's entries are counted
+  by walking it directly (the EOCD's declared count is never trusted), so a lying
+  header can't force a `ZipInfo` allocation per member. Members are then bounded
+  for count, per-member and total uncompressed size, and compression ratio; every
+  resource read is streamed under a size cap. Uploads stream straight to disk
+  under a size cap, cleaned up in a `finally`. A book with no readable spine
+  document is rejected at open rather than failing later at render time.
+- **Content-addressed, fixed-size identity.** A book's storage id is
+  `epub:` + SHA-256 over the archive's bytes (mixing in the normalized
+  identifier) — always ~69 chars. The publisher-controlled `dc:identifier` is
+  never used as a storage key directly, so a hostile multi-megabyte identifier
+  can't bloat the state file; and scroll-driven progress writes are throttled
+  (with a flush on navigation, bookmark, and close) so persistence isn't rewritten
+  on every scroll event.
 - **Remote bind stays pinned.** For a wildcard bind (`0.0.0.0`) the machine's
   real interface addresses are resolved and accepted as `Host`, so a LAN client
   using the actual IP works while arbitrary Host values are still refused.

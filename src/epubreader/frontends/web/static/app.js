@@ -49,11 +49,26 @@ function showSection(section) {
   setStatus(`${section.title}  —  ${section.spine_index + 1}/${section.total_sections}`);
 }
 
+// Block tags the engine (_BLOCK_TAGS) breaks text on. The renderer must break
+// on exactly these — not on every parent change — or word boundaries diverge
+// (e.g. foo<span>bar</span> is "foobar" to the engine, one token).
+const SEARCH_BLOCK_TAGS = {
+  P: 1, DIV: 1, BR: 1, LI: 1, TR: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1,
+  SECTION: 1, ARTICLE: 1, HEADER: 1, FOOTER: 1, BLOCKQUOTE: 1, PRE: 1, TD: 1,
+};
+function nearestBlock(node) {
+  let el = node.parentNode;
+  while (el && el.nodeType === 1) {
+    if (SEARCH_BLOCK_TAGS[el.nodeName]) return el;
+    el = el.parentNode;
+  }
+  return null;
+}
+
 // Locate and select the Nth occurrence of a query in the iframe document,
 // building the SAME regex the engine used (escaped, optional \b, case flag) so
 // the ordinal the engine assigned targets the same match. A newline is inserted
-// between text nodes with different parents to approximate the engine's block
-// breaks (which matter for whole-word boundaries).
+// when the nearest block-level ancestor changes, mirroring the engine's breaks.
 function highlightOccurrence(win, query, ordinal, caseSensitive, wholeWord) {
   const doc = win.document;
   const root = doc.body || doc.documentElement;
@@ -66,14 +81,17 @@ function highlightOccurrence(win, query, ordinal, caseSensitive, wholeWord) {
   const nodes = [];
   let text = "";
   let node;
-  let lastParent = null;
+  let lastBlock;
+  let first = true;
   while ((node = walker.nextNode())) {
     const parent = node.parentNode;
     if (parent && /^(SCRIPT|STYLE)$/.test(parent.nodeName)) continue;
-    if (lastParent !== null && parent !== lastParent) text += "\n";
+    const block = nearestBlock(node);
+    if (!first && block !== lastBlock) text += "\n";
+    first = false;
     nodes.push({ node, start: text.length });
     text += node.nodeValue;
-    lastParent = parent;
+    lastBlock = block;
   }
 
   let m;

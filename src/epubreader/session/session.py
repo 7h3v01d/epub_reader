@@ -13,6 +13,7 @@ a frontend maps ``section.key`` to whatever URL its renderer speaks.
 from __future__ import annotations
 
 import dataclasses
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -75,6 +76,9 @@ class RenderedSection:
 class ReaderSession:
     """Drives reading state over a single open book."""
 
+    #: Minimum seconds between throttled (scroll-driven) disk writes.
+    _PERSIST_MIN_INTERVAL = 1.5
+
     def __init__(self, store: ProgressStore) -> None:
         self._store = store
         self._book: Optional[Book] = None
@@ -85,6 +89,8 @@ class ReaderSession:
         self._pending_ordinal: int = 0
         self._pending_case: bool = False
         self._pending_whole: bool = False
+        self._last_persist: float = 0.0
+        self._dirty: bool = False
         self._section_listeners: list[SectionListener] = []
         self._error_listeners: list[ErrorListener] = []
         self._book_opened_listeners: list[BookOpenedListener] = []
@@ -276,7 +282,15 @@ class ReaderSession:
 
     # ---- bookmarks ------------------------------------------------------- #
     def bookmarks(self) -> list[Bookmark]:
-        """Bookmarks saved for the current book, newest position aside."""
+        """Bookmarks for the current book.
+
+        Re-read from the store so a bookmark added by another live session (a
+        desktop reader while the web reader is open, say) is seen — the file is
+        small and this is called on sidebar refresh, not in a hot loop.
+        """
+        if self._book is None:
+            return []
+        self._bookmarks = self._store.get_bookmarks(self._book.book_id)
         return list(self._bookmarks)
 
     def add_bookmark(self, label: str = "") -> Bookmark:
@@ -325,7 +339,7 @@ class ReaderSession:
             progress=progress,
             fragment="",
         )
-        self._persist()
+        self._persist(throttle=True)
 
     # ---- settings -------------------------------------------------------- #
     def settings(self) -> ReaderSettings:
@@ -345,6 +359,20 @@ class ReaderSession:
         if not 0 <= idx < len(spine):
             self._locator = Locator(spine_index=0)
 
-    def _persist(self) -> None:
-        if self._book is not None:
-            self._store.set_locator(self._book.book_id, self._locator)
+    def _persist(self, *, throttle: bool = False) -> None:
+        if self._book is None:
+            return
+        if throttle:
+            # Scroll fires continuously; write to disk at most every interval so
+            # a maliciously huge state document (or an ordinary large one) isn't
+            # rewritten on every scroll event. The in-memory locator is already
+            # current; a flush on navigation/close/bookmark captures the rest.
+            now = time.monotonic()
+            if now - self._last_persist < self._PERSIST_MIN_INTERVAL:
+                self._dirty = True
+                return
+            self._last_persist = now
+        else:
+            self._last_persist = time.monotonic()
+        self._dirty = False
+        self._store.set_locator(self._book.book_id, self._locator)

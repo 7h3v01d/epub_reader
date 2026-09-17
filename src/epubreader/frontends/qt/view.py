@@ -32,15 +32,19 @@ _HIGHLIGHT_JS = r"""(function(){
   var q=%(q)s, ordinal=%(n)d, caseSensitive=%(case)s, wholeWord=%(whole)s;
   var doc=document, root=doc.body||doc.documentElement;
   if(!root||!q) return;
+  var BLOCK={P:1,DIV:1,BR:1,LI:1,TR:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,SECTION:1,ARTICLE:1,HEADER:1,FOOTER:1,BLOCKQUOTE:1,PRE:1,TD:1};
+  function nb(n){ var e=n.parentNode; while(e&&e.nodeType===1){ if(BLOCK[e.nodeName]) return e; e=e.parentNode; } return null; }
   var pat=q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
   if(wholeWord) pat="\\b"+pat+"\\b";
   var re=new RegExp(pat, caseSensitive?"g":"gi");
-  var w=doc.createTreeWalker(root, NodeFilter.SHOW_TEXT), nodes=[], text="", n, lp=null;
+  var w=doc.createTreeWalker(root, NodeFilter.SHOW_TEXT), nodes=[], text="", n, lb, first=true;
   while((n=w.nextNode())){
     var p=n.parentNode;
     if(p&&/^(SCRIPT|STYLE)$/.test(p.nodeName)) continue;
-    if(lp!==null&&p!==lp) text+="\n";
-    nodes.push({node:n,start:text.length}); text+=n.nodeValue; lp=p;
+    var b=nb(n);
+    if(!first&&b!==lb) text+="\n";
+    first=false;
+    nodes.push({node:n,start:text.length}); text+=n.nodeValue; lb=b;
   }
   var m, c=0, t=null;
   while((m=re.exec(text))){ if(c===ordinal){t={s:m.index,e:m.index+m[0].length};break;} c++; if(m.index===re.lastIndex) re.lastIndex++; }

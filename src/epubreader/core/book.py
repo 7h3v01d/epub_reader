@@ -48,6 +48,8 @@ class Book:
     #: Largest the archive file itself may be on disk (bounds central-directory
     #: memory before the zip is even parsed).
     MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+    #: Largest the central directory may be — bounds the pre-open CD walk.
+    MAX_CENTRAL_DIRECTORY_BYTES = 32 * 1024 * 1024
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
@@ -89,11 +91,25 @@ class Book:
             if opf_key not in self._names:
                 raise InvalidEpubError(f"OPF not found in archive: {opf_key}")
             self._package = parse_package(opf_key, self._raw(opf_key, self.MAX_XML_BYTES))
+            self._validate_spine(self._package)
             self._toc = self._load_toc(self._package)
             self._book_id = self._compute_book_id(self._package.metadata)
         except Exception:
             self.close()
             raise
+
+    def _validate_spine(self, package: Package) -> None:
+        """Refuse a book with no readable spine document.
+
+        A spine may reference a resource that isn't in the archive; rather than
+        opening successfully and failing later at render time, require that at
+        least one spine document actually exists so ``open()`` reflects whether
+        the book is readable.
+        """
+        if not package.spine:
+            raise InvalidEpubError("book has no spine")
+        if not any(item.key in self._names for item in package.spine):
+            raise InvalidEpubError("no spine document exists in the archive")
 
     def _preflight_archive(self) -> None:
         """Cheap pre-open checks that bound memory before ZipFile parsing."""
@@ -103,33 +119,75 @@ class Book:
             raise InvalidEpubError(f"cannot stat archive: {exc}") from exc
         if size > self.MAX_ARCHIVE_BYTES:
             raise InvalidEpubError(f"archive file too large ({size} bytes)")
-        count = self._declared_entry_count(size)
-        if count is not None and count > self.MAX_FILE_COUNT:
-            raise InvalidEpubError(f"archive declares too many entries ({count})")
+        self._central_directory_preflight(size)
 
-    def _declared_entry_count(self, size: int) -> Optional[int]:
-        """Read the End-Of-Central-Directory record's entry count, if findable.
+    def _central_directory_preflight(self, size: int) -> None:
+        """Count central-directory entries ourselves before ZipFile allocates.
 
-        Best-effort: reads only the archive tail. Returns ``None`` when the EOCD
-        can't be located (ZipFile will then apply the post-parse count check).
+        The EOCD's declared count is attacker-controlled, so it is never trusted
+        as the bound. Instead the central directory's offset/size are validated
+        against the physical file and its byte size is capped, then its records
+        are walked and counted, stopping the moment the count exceeds the budget
+        — so a lying EOCD (small declared count, huge real directory) can't force
+        Python to allocate a ``ZipInfo`` per member.
         """
+        loc = self._read_eocd(size)
+        if loc is None:
+            return  # EOCD not locatable; ZipFile + _check_budgets still guard
+        cd_offset, cd_size, declared = loc
+        if cd_offset < 0 or cd_size < 0 or cd_offset + cd_size > size:
+            raise InvalidEpubError("central directory bounds fall outside the file")
+        if cd_size > self.MAX_CENTRAL_DIRECTORY_BYTES:
+            raise InvalidEpubError(f"central directory too large ({cd_size} bytes)")
+        try:
+            with open(self._path, "rb") as fh:
+                fh.seek(cd_offset)
+                cd = fh.read(cd_size)
+        except OSError as exc:
+            raise InvalidEpubError(f"cannot read central directory: {exc}") from exc
+
+        pos, observed = 0, 0
+        while pos + 46 <= len(cd) and cd[pos:pos + 4] == b"PK\x01\x02":
+            observed += 1
+            if observed > self.MAX_FILE_COUNT:
+                raise InvalidEpubError(
+                    f"archive has too many entries (> {self.MAX_FILE_COUNT})"
+                )
+            name_len = struct.unpack_from("<H", cd, pos + 28)[0]
+            extra_len = struct.unpack_from("<H", cd, pos + 30)[0]
+            comment_len = struct.unpack_from("<H", cd, pos + 32)[0]
+            pos += 46 + name_len + extra_len + comment_len
+        # A declared count wildly below the observed one is itself suspicious.
+        if declared is not None and observed > max(declared, 0) and observed > self.MAX_FILE_COUNT:
+            raise InvalidEpubError("central directory entry count mismatch")
+
+    def _read_eocd(self, size: int) -> Optional[tuple[int, int, Optional[int]]]:
+        """Return (cd_offset, cd_size, declared_count) from the EOCD, or None."""
         try:
             with open(self._path, "rb") as fh:
                 fh.seek(max(0, size - 66_000))  # 64 KiB max comment + EOCD record
                 tail = fh.read()
+                tail_start = max(0, size - len(tail))
         except OSError:
             return None
         idx = tail.rfind(b"PK\x05\x06")
         if idx < 0 or idx + 22 > len(tail):
             return None
-        total = struct.unpack_from("<H", tail, idx + 10)[0]
-        if total == 0xFFFF:  # Zip64: real count lives in the Zip64 EOCD record
-            z = tail.rfind(b"PK\x06\x06")
-            if z >= 0 and z + 40 <= len(tail):
-                total = struct.unpack_from("<Q", tail, z + 32)[0]
+        declared = struct.unpack_from("<H", tail, idx + 10)[0]
+        cd_size = struct.unpack_from("<I", tail, idx + 12)[0]
+        cd_offset = struct.unpack_from("<I", tail, idx + 16)[0]
+        if declared == 0xFFFF or cd_size == 0xFFFFFFFF or cd_offset == 0xFFFFFFFF:
+            z = tail.rfind(b"PK\x06\x06")             # Zip64 EOCD record
+            if z >= 0 and z + 56 <= len(tail):
+                declared = struct.unpack_from("<Q", tail, z + 32)[0]
+                cd_size = struct.unpack_from("<Q", tail, z + 40)[0]
+                cd_offset = struct.unpack_from("<Q", tail, z + 48)[0]
             else:
-                return None
-        return total
+                return (cd_offset, cd_size, None)
+        # Some archives store cd_offset relative to the tail we read; keep the
+        # absolute value but guard against an obviously bogus one below.
+        _ = tail_start
+        return (cd_offset, cd_size, declared)
 
     def _check_budgets(self, infos: list[zipfile.ZipInfo]) -> None:
         """Reject archives that look like decompression bombs, before reading."""
@@ -169,26 +227,26 @@ class Book:
         return ()
 
     def _compute_book_id(self, meta: Metadata) -> str:
-        """A stable id for progress storage.
+        """A fixed-size, content-addressed id for progress storage.
 
-        A ``dc:identifier`` alone is not trustworthy — two different EPUBs can
-        declare the same one (accidentally or maliciously), which would merge
-        their progress and bookmarks. So identity always includes a content
-        fingerprint derived from the archive's central directory (member names,
-        sizes and CRCs) — cheap, since it reads no member data.
+        The publisher-controlled ``dc:identifier`` is never used as a storage
+        key directly — a hostile EPUB could make it megabytes long and turn every
+        small progress write into a huge one. Instead the id is a SHA-256 over the
+        archive's actual bytes (mixing in the normalized identifier), so it is
+        always ~69 chars and two different books never share it.
         """
-        fingerprint = self._archive_fingerprint()
-        if meta.identifier:
-            return f"{meta.identifier}#{fingerprint}"
-        return f"sha256:{fingerprint}"
-
-    def _archive_fingerprint(self) -> str:
-        assert self._zip is not None
         digest = hashlib.sha256()
-        for info in sorted(self._zip.infolist(), key=lambda i: i.filename):
-            digest.update(info.filename.encode("utf-8", "replace"))
-            digest.update(f"|{info.file_size}|{info.CRC}|".encode("ascii"))
-        return digest.hexdigest()[:16]
+        digest.update((meta.identifier or "").strip().encode("utf-8", "replace"))
+        digest.update(b"\x00")
+        digest.update(self._archive_content_hash().encode("ascii"))
+        return f"epub:{digest.hexdigest()}"
+
+    def _archive_content_hash(self) -> str:
+        digest = hashlib.sha256()
+        with open(self._path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def close(self) -> None:
         with self._lock:
