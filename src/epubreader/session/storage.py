@@ -238,13 +238,21 @@ class JsonProgressStore(ProgressStore):
         # a second reader adding a bookmark can't overwrite the first's with a
         # stale snapshot (the semantic lost-update the file lock alone missed).
         with self._mutate() as data:
-            data.setdefault("bookmarks", {}).setdefault(book_id, []).append(bookmark.to_dict())
+            bookmarks = data.setdefault("bookmarks", {})
+            existing = bookmarks.get(book_id)
+            if not isinstance(existing, list):   # untrusted state: coerce first
+                existing = []
+            existing.append(bookmark.to_dict())
+            bookmarks[book_id] = existing
         return self.get_bookmarks(book_id)
 
     def remove_bookmark(self, book_id: str, bookmark_id: str) -> list[Bookmark]:
         with self._mutate() as data:
-            current = data.get("bookmarks", {}).get(book_id, [])
-            data.setdefault("bookmarks", {})[book_id] = [
+            bookmarks = data.setdefault("bookmarks", {})
+            current = bookmarks.get(book_id)
+            if not isinstance(current, list):
+                current = []
+            bookmarks[book_id] = [
                 x for x in current
                 if not (isinstance(x, dict) and x.get("id") == bookmark_id)
             ]

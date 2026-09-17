@@ -199,6 +199,62 @@ def test_declared_entry_count_preflight(tmp_path, epub3_path, monkeypatch):
         Book.open(epub3_path)
 
 
+# ---- 0.5 review: scroll supersedes a stale anchor ------------------------ #
+def test_scroll_clears_fragment_so_progress_restores(tmp_path, epub3_path):
+    sp = tmp_path / "state.json"
+    first = ReaderSession(JsonProgressStore(sp))
+    first.open(epub3_path)
+    key = first.current_section().key
+    first.go_to_key(key, fragment="top")   # anchor navigation
+    first.report_progress(0.8)             # then the user scrolls
+    first.close()
+
+    second = ReaderSession(JsonProgressStore(sp))
+    second.open(epub3_path)
+    section = second.current_section()
+    # The stale anchor must not override the restored scroll position.
+    assert section.fragment == ""
+    assert section.progress == 0.8
+
+
+# ---- 0.5 review: malformed bookmark value doesn't crash mutation --------- #
+def test_add_bookmark_over_malformed_value_recovers(tmp_path):
+    import json
+
+    from epubreader.core.locators import Bookmark, Locator
+
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps({"bookmarks": {"BID": {"not": "a-list"}}}), encoding="utf-8")
+    store = JsonProgressStore(p)
+    bm = Bookmark(id="x", locator=Locator(0), label="x", created_at="t")
+    result = store.add_bookmark("BID", bm)     # must not raise
+    assert [b.id for b in result] == ["x"]
+
+
+# ---- 0.5 review: accepted-hosts separates bind address from Host --------- #
+def test_accepted_hosts_specific_and_wildcard():
+    from epubreader.frontends.web.frontend import accepted_hosts
+
+    specific = accepted_hosts("192.168.1.50")
+    assert "192.168.1.50" in specific and "127.0.0.1" in specific
+    wildcard = accepted_hosts("0.0.0.0")
+    # A wildcard bind must still accept loopback (and, best-effort, the machine's
+    # own addresses) rather than only the literal 0.0.0.0.
+    assert "127.0.0.1" in wildcard
+
+
+# ---- 0.5 review: search hit carries its search semantics ----------------- #
+def test_search_flags_reach_the_section(epub3_path):
+    session = ReaderSession(MemoryProgressStore())
+    session.open(epub3_path)
+    seen = []
+    session.on_section(seen.append)
+    hits = session.search("Chapter", whole_word=True, case_sensitive=True)
+    session.go_to_search_hit(hits[0])
+    assert seen[-1].highlight_whole_word is True
+    assert seen[-1].highlight_case is True
+
+
 # ---- 0.4 review: search hit carries its ordinal --------------------------- #
 def test_search_hit_carries_ordinal_to_section(epub3_path):
     session = ReaderSession(MemoryProgressStore())

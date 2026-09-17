@@ -52,6 +52,10 @@ class SearchHit:
     #: 0-based index of this match within its section (lets a frontend step to
     #: the nth occurrence when highlighting).
     ordinal: int
+    #: Search semantics used, so a renderer can locate the same occurrence
+    #: (native find alone would count matches differently and mis-target).
+    case_sensitive: bool = False
+    whole_word: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -63,6 +67,8 @@ class SearchHit:
             "match_start": self.match_start,
             "match_end": self.match_end,
             "ordinal": self.ordinal,
+            "case_sensitive": self.case_sensitive,
+            "whole_word": self.whole_word,
         }
 
     @classmethod
@@ -76,6 +82,8 @@ class SearchHit:
             match_start=int(data.get("match_start", 0)),
             match_end=int(data.get("match_end", 0)),
             ordinal=int(data.get("ordinal", 0)),
+            case_sensitive=bool(data.get("case_sensitive", False)),
+            whole_word=bool(data.get("whole_word", False)),
         )
 
 
@@ -215,6 +223,8 @@ def search_book(
                     match_start=ms,
                     match_end=me,
                     ordinal=ordinal,
+                    case_sensitive=case_sensitive,
+                    whole_word=whole_word,
                 )
             )
             if len(hits) >= max_results:

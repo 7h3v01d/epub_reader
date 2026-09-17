@@ -188,8 +188,15 @@ class ReaderWindow(QMainWindow, ReaderFrontend):
         open_book_async(
             path,
             lambda book: self._on_book_opened(book, generation),
-            self.report_error,
+            lambda message: self._on_open_failed(message, generation),
         )
+
+    def _on_open_failed(self, message: str, generation: int) -> None:
+        # Discard a stale failure so a slow earlier open failing after a newer
+        # open succeeded can't stamp an error over the current book.
+        if generation != getattr(self, "_open_generation", generation):
+            return
+        self.report_error(message)
 
     def _on_book_opened(self, book, generation: int = 0) -> None:
         # Runs on the GUI thread: safe to touch the view/session.

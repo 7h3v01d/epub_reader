@@ -23,6 +23,37 @@ from ...session.settings import ReaderSettings
 from .page import ReaderPage
 from .scheme import DenyFirstInterceptor, EpubSchemeHandler, url_for_key
 
+# App-owned DOM search: rebuilds the engine's regex (escaped query, optional
+# word boundaries, case flag), walks visible text nodes with a newline inserted
+# between differing parents to approximate block breaks, then selects and scrolls
+# to the Nth match. Runs in the application world, so it works with book-content
+# JavaScript disabled. Placeholders are filled with json-safe values.
+_HIGHLIGHT_JS = r"""(function(){
+  var q=%(q)s, ordinal=%(n)d, caseSensitive=%(case)s, wholeWord=%(whole)s;
+  var doc=document, root=doc.body||doc.documentElement;
+  if(!root||!q) return;
+  var pat=q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+  if(wholeWord) pat="\\b"+pat+"\\b";
+  var re=new RegExp(pat, caseSensitive?"g":"gi");
+  var w=doc.createTreeWalker(root, NodeFilter.SHOW_TEXT), nodes=[], text="", n, lp=null;
+  while((n=w.nextNode())){
+    var p=n.parentNode;
+    if(p&&/^(SCRIPT|STYLE)$/.test(p.nodeName)) continue;
+    if(lp!==null&&p!==lp) text+="\n";
+    nodes.push({node:n,start:text.length}); text+=n.nodeValue; lp=p;
+  }
+  var m, c=0, t=null;
+  while((m=re.exec(text))){ if(c===ordinal){t={s:m.index,e:m.index+m[0].length};break;} c++; if(m.index===re.lastIndex) re.lastIndex++; }
+  if(!t) return;
+  function loc(a){ for(var i=nodes.length-1;i>=0;i--){ if(a>=nodes[i].start&&a-nodes[i].start<=nodes[i].node.nodeValue.length) return {node:nodes[i].node,offset:a-nodes[i].start}; } return null; }
+  var s=loc(t.s), e=loc(t.e); if(!s||!e) return;
+  var r=doc.createRange();
+  try{ r.setStart(s.node,s.offset); r.setEnd(e.node,e.offset); }catch(_e){ return; }
+  var sel=window.getSelection(); if(sel){ sel.removeAllRanges(); sel.addRange(r); }
+  var rect=r.getBoundingClientRect();
+  window.scrollTo(0,(window.scrollY||0)+rect.top-window.innerHeight/3);
+})();"""
+
 
 class ReaderView(QWebEngineView):
     """Renders book sections and reports reading progress."""
@@ -48,6 +79,8 @@ class ReaderView(QWebEngineView):
         # deny-first posture intact.
         self._pending_find = ""
         self._pending_ordinal = 0
+        self._pending_case = False
+        self._pending_whole = False
         self._pending_progress = 0.0
         self.loadFinished.connect(self._on_load_finished)
 
@@ -63,6 +96,8 @@ class ReaderView(QWebEngineView):
     def show_section(self, section: RenderedSection) -> None:
         self._pending_find = section.highlight
         self._pending_ordinal = section.highlight_ordinal
+        self._pending_case = section.highlight_case
+        self._pending_whole = section.highlight_whole_word
         # A fragment target wins over a stored fraction; otherwise restore the
         # saved reading position within the section.
         self._pending_progress = 0.0 if section.fragment else section.progress
@@ -72,13 +107,27 @@ class ReaderView(QWebEngineView):
         if not ok:
             return
         if self._pending_find:
-            # findText advances the selection each call; step to the specific
-            # occurrence this hit referred to. An empty term clears highlights.
-            for _ in range(self._pending_ordinal + 1):
-                self._page.findText(self._pending_find)
+            self._highlight_occurrence(
+                self._pending_find, self._pending_ordinal,
+                self._pending_case, self._pending_whole,
+            )
         elif self._pending_progress > 0:
             self._restore_scroll(self._pending_progress)
         self._pending_progress = 0.0
+
+    def _highlight_occurrence(self, query: str, ordinal: int, case: bool, whole: bool) -> None:
+        # App-owned DOM search in the application world (runs with book-content
+        # JS disabled), using the engine's own regex semantics so the ordinal
+        # targets the same occurrence the engine counted.
+        import json
+
+        script = _HIGHLIGHT_JS % {
+            "q": json.dumps(query),
+            "n": int(ordinal),
+            "case": "true" if case else "false",
+            "whole": "true" if whole else "false",
+        }
+        self._page.runJavaScript(script, QWebEngineScript.ScriptWorldId.ApplicationWorld)
 
     def _restore_scroll(self, fraction: float) -> None:
         # Scroll via an application-world script: this is app-initiated, so it

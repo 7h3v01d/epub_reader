@@ -153,30 +153,42 @@ def create_app(
 
     @app.post("/api/upload")
     async def upload(request: Request, name: str = "book.epub") -> dict:
-        # Raw-body upload streamed straight to a private temp file, so a large
-        # upload is never held whole in memory. The size cap aborts mid-stream.
+        # Content-Length is advisory (a client can lie), so the streaming limit
+        # below is authoritative — but an honest oversized header saves the work.
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="file too large")
+
         new_dir, dest = frontend.prepare_upload(name)
-        total = 0
+        adopted = False
         try:
+            total = 0
+            oversized = False
+            # The file handle is closed by leaving this block *before* any
+            # cleanup, so deleting the temp dir can't fail on an open file
+            # (which on Windows would strand a near-max-size file).
             with open(dest, "wb") as fh:
                 async for chunk in request.stream():
                     total += len(chunk)
                     if total > _MAX_UPLOAD_BYTES:
-                        frontend.abort_upload(new_dir)
-                        raise HTTPException(status_code=413, detail="file too large")
+                        oversized = True
+                        break
                     fh.write(chunk)
-        except HTTPException:
-            raise
-        except Exception:  # noqa: BLE001
-            frontend.abort_upload(new_dir)
-            raise HTTPException(status_code=400, detail="upload failed")
-        if total == 0:
-            frontend.abort_upload(new_dir)
-            raise HTTPException(status_code=400, detail="empty upload")
-        try:
-            return frontend.adopt_upload(new_dir, dest)
-        except Exception as exc:  # noqa: BLE001 - adopt_upload already cleaned up
-            raise HTTPException(status_code=400, detail=f"could not open EPUB: {exc}")
+            if oversized:
+                raise HTTPException(status_code=413, detail="file too large")
+            if total == 0:
+                raise HTTPException(status_code=400, detail="empty upload")
+            try:
+                result = frontend.adopt_upload(new_dir, dest)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"could not open EPUB: {exc}")
+            adopted = True
+            return result
+        finally:
+            # Runs on every exit that didn't transfer ownership — oversized,
+            # empty, open failure, or task cancellation — so nothing is stranded.
+            if not adopted:
+                frontend.abort_upload(new_dir)
 
     @app.post("/api/next")
     def go_next() -> dict:

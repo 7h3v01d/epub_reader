@@ -55,6 +55,10 @@ class RenderedSection:
     #: Which occurrence of ``highlight`` to reveal (0-based) — a frontend steps
     #: to the Nth match so distinct search hits for the same word land correctly.
     highlight_ordinal: int = 0
+    #: Search semantics for locating ``highlight`` so the renderer counts matches
+    #: the same way the engine did.
+    highlight_case: bool = False
+    highlight_whole_word: bool = False
     #: Stored reading position within this section (0..1). A frontend restores
     #: scroll to it after load when there is no fragment to honour instead.
     progress: float = 0.0
@@ -79,6 +83,8 @@ class ReaderSession:
         self._bookmarks: list[Bookmark] = []
         self._pending_highlight: str = ""
         self._pending_ordinal: int = 0
+        self._pending_case: bool = False
+        self._pending_whole: bool = False
         self._section_listeners: list[SectionListener] = []
         self._error_listeners: list[ErrorListener] = []
         self._book_opened_listeners: list[BookOpenedListener] = []
@@ -196,6 +202,8 @@ class ReaderSession:
             total_sections=len(spine),
             highlight=self._pending_highlight,
             highlight_ordinal=self._pending_ordinal,
+            highlight_case=self._pending_case,
+            highlight_whole_word=self._pending_whole,
             progress=self._locator.progress,
         )
 
@@ -254,6 +262,8 @@ class ReaderSession:
         """Navigate to a hit's section and ask the frontend to highlight it."""
         self._pending_highlight = hit.query
         self._pending_ordinal = hit.ordinal
+        self._pending_case = hit.case_sensitive
+        self._pending_whole = hit.whole_word
         try:
             self.go_to_spine(hit.spine_index)
         finally:
@@ -261,6 +271,8 @@ class ReaderSession:
             # and must not leak into later re-renders (e.g. a settings change).
             self._pending_highlight = ""
             self._pending_ordinal = 0
+            self._pending_case = False
+            self._pending_whole = False
 
     # ---- bookmarks ------------------------------------------------------- #
     def bookmarks(self) -> list[Bookmark]:
@@ -301,11 +313,17 @@ class ReaderSession:
 
     # ---- progress within the current section ---------------------------- #
     def report_progress(self, progress: float) -> None:
-        """Record scroll fraction reported by the view (does not re-render)."""
+        """Record scroll fraction reported by the view (does not re-render).
+
+        The fragment is the user's *initial* navigation target; once they scroll
+        to a real position, that position becomes authoritative, so the stale
+        anchor is dropped — otherwise a fragment-based TOC jump would override
+        the restored scroll position on the next open.
+        """
         self._locator = Locator(
             spine_index=self._locator.spine_index,
             progress=progress,
-            fragment=self._locator.fragment,
+            fragment="",
         )
         self._persist()
 

@@ -260,6 +260,22 @@ def test_failed_upload_preserves_open_book(web, epub3_path):
     assert client.get("/api/state").json()["is_open"]
 
 
+def test_oversized_upload_leaves_no_temp_dir(empty_client, monkeypatch):
+    import glob
+    import tempfile
+
+    from epubreader.frontends.web import server
+
+    monkeypatch.setattr(server, "_MAX_UPLOAD_BYTES", 100)
+    _, client = empty_client
+    pattern = str(tempfile.gettempdir()) + "/epubreader-*"
+    before = set(glob.glob(pattern))
+    r = client.post("/api/upload", content=b"x" * 500)   # oversized
+    assert r.status_code == 413
+    # The streamed temp file/dir must be cleaned up, not stranded.
+    assert set(glob.glob(pattern)) == before
+
+
 def test_settings_change_reflected_in_state(web):
     _, client = web
     state = client.post(

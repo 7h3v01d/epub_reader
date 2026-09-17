@@ -117,7 +117,7 @@ python -m pytest
 ```
 
 The engine, session, frontend contract, and the web routes are covered by a
-fast, headless suite (105 tests; the web tests use FastAPI's `TestClient`, no
+fast, headless suite (110 tests; the web tests use FastAPI's `TestClient`, no
 browser). The Qt window is exercised by hand — it needs a display and the
 QtWebEngine binaries — so it is intentionally left out of the suite. The web
 tests skip themselves automatically if FastAPI isn't installed.
@@ -205,7 +205,12 @@ the TOC tree underneath a user who has expanded or selected a node.
 - **Hostile-archive budgets.** EPUBs are preflighted for file size and declared
   entry count *before* the zip is parsed, then for member count, per-member and
   total uncompressed size, and compression ratio; every resource read is streamed
-  under a size cap. Uploads stream straight to disk under a size cap.
+  under a size cap. Uploads stream straight to disk under a size cap, and a
+  rejected or cancelled upload's temp file is always cleaned up (the file handle
+  is closed before deletion, and cleanup runs in a `finally`).
+- **Remote bind stays pinned.** For a wildcard bind (`0.0.0.0`) the machine's
+  real interface addresses are resolved and accepted as `Host`, so a LAN client
+  using the actual IP works while arbitrary Host values are still refused.
 - **Untrusted persistence.** The state file is treated as untrusted input at
   every level: a corrupt or wrong-typed document is quarantined, and individual
   fields (a hostile `spine_index`, a non-string `theme`) are coerced rather than

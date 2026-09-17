@@ -39,6 +39,8 @@ function showSection(section) {
   const parts = section.key.split("/").map(encodeURIComponent).join("/");
   page._highlight = section.highlight || "";
   page._ordinal = section.highlight_ordinal || 0;
+  page._hlCase = !!section.highlight_case;
+  page._hlWord = !!section.highlight_whole_word;
   page._progress = section.fragment ? 0 : (section.progress || 0);
   page.src = "/resource/" + parts + frag;
 
@@ -47,19 +49,76 @@ function showSection(section) {
   setStatus(`${section.title}  —  ${section.spine_index + 1}/${section.total_sections}`);
 }
 
+// Locate and select the Nth occurrence of a query in the iframe document,
+// building the SAME regex the engine used (escaped, optional \b, case flag) so
+// the ordinal the engine assigned targets the same match. A newline is inserted
+// between text nodes with different parents to approximate the engine's block
+// breaks (which matter for whole-word boundaries).
+function highlightOccurrence(win, query, ordinal, caseSensitive, wholeWord) {
+  const doc = win.document;
+  const root = doc.body || doc.documentElement;
+  if (!root || !query) return false;
+  let pattern = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (wholeWord) pattern = "\\b" + pattern + "\\b";
+  const re = new RegExp(pattern, caseSensitive ? "g" : "gi");
+
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let text = "";
+  let node;
+  let lastParent = null;
+  while ((node = walker.nextNode())) {
+    const parent = node.parentNode;
+    if (parent && /^(SCRIPT|STYLE)$/.test(parent.nodeName)) continue;
+    if (lastParent !== null && parent !== lastParent) text += "\n";
+    nodes.push({ node, start: text.length });
+    text += node.nodeValue;
+    lastParent = parent;
+  }
+
+  let m;
+  let count = 0;
+  let target = null;
+  while ((m = re.exec(text))) {
+    if (count === ordinal) { target = { start: m.index, end: m.index + m[0].length }; break; }
+    count++;
+    if (m.index === re.lastIndex) re.lastIndex++;
+  }
+  if (!target) return false;
+
+  const locate = (abs) => {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      if (abs >= nodes[i].start && abs - nodes[i].start <= nodes[i].node.nodeValue.length) {
+        return { node: nodes[i].node, offset: abs - nodes[i].start };
+      }
+    }
+    return null;
+  };
+  const s = locate(target.start);
+  const e = locate(target.end);
+  if (!s || !e) return false;
+  const range = doc.createRange();
+  try {
+    range.setStart(s.node, s.offset);
+    range.setEnd(e.node, e.offset);
+  } catch (_e) { return false; }
+  const sel = win.getSelection();
+  if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+  const rect = range.getBoundingClientRect();
+  win.scrollTo(0, (win.scrollY || 0) + rect.top - win.innerHeight / 3);
+  return true;
+}
+
 page.addEventListener("load", () => {
   let win;
   try { win = page.contentWindow; } catch (_e) { return; }
   if (!win) return;
-  // Apply a pending search highlight once the section is in the DOM. find()
-  // advances the selection each call, so stepping it (ordinal + 1) times lands
-  // on the specific occurrence this hit refers to.
+  // Apply a pending search highlight once the section is in the DOM, using the
+  // engine's own semantics (case sensitivity + whole-word) so the Nth match the
+  // engine counted is the one revealed — native find() would count differently.
   if (page._highlight) {
-    try {
-      for (let i = 0; i <= (page._ordinal || 0); i++) {
-        win.find(page._highlight, false, false, true);
-      }
-    } catch (_e) { /* find unsupported */ }
+    try { highlightOccurrence(win, page._highlight, page._ordinal, page._hlCase, page._hlWord); }
+    catch (_e) { /* DOM unavailable */ }
     page._highlight = "";
   } else if (page._progress > 0) {
     // Restore reading position: scroll to the stored fraction of the section.

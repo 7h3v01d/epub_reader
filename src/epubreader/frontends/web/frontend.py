@@ -40,6 +40,31 @@ from ...session.settings import ReaderSettings
 _HTML_MEDIA = ("application/xhtml+xml", "text/html", "application/html")
 
 
+def accepted_hosts(bind_host: str) -> set[str]:
+    """Host header values to accept, given the address the server binds to.
+
+    The bind address and the acceptable Host are not the same thing: a wildcard
+    bind (``0.0.0.0`` / ``::``) is reached by clients using the machine's real
+    address, not the wildcard, so those addresses are resolved and added — while
+    still refusing arbitrary Host values (DNS-rebinding protection is kept).
+    """
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    h = (bind_host or "").lower()
+    if h in {"0.0.0.0", "::", ""}:
+        import socket
+
+        try:
+            name = socket.gethostname()
+            hosts.add(name.lower())
+            for info in socket.getaddrinfo(name, None):
+                hosts.add(str(info[4][0]).lower())
+        except OSError:
+            pass
+    else:
+        hosts.add(h)
+    return hosts
+
+
 class WebFrontend(ReaderFrontend):
     """Presents a :class:`ReaderSession` over HTTP.
 
@@ -80,10 +105,10 @@ class WebFrontend(ReaderFrontend):
         from .server import create_app
 
         token = secrets.token_urlsafe(24)
-        # Host/Origin pinning stays on for every bind — for a remote bind the
-        # server's own host is added to the allow-list, so DNS-rebinding and
-        # cross-origin writes are still refused rather than silently disabled.
-        allowed = {"127.0.0.1", "localhost", "::1", host.lower()}
+        # Host/Origin pinning stays on for every bind. For a wildcard bind the
+        # machine's real addresses are resolved and accepted, so a LAN client
+        # using the actual IP works while arbitrary Host values are still refused.
+        allowed = accepted_hosts(host)
         app = create_app(self, token=token, allowed_hosts=allowed)
         uvicorn.run(app, host=host, port=port, log_level="info")
         return 0
@@ -275,6 +300,8 @@ def _section_payload(section: RenderedSection) -> dict:
         "is_last": section.is_last,
         "highlight": section.highlight,
         "highlight_ordinal": section.highlight_ordinal,
+        "highlight_case": section.highlight_case,
+        "highlight_whole_word": section.highlight_whole_word,
         "progress": section.progress,
     }
 
