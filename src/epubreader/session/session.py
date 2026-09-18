@@ -60,6 +60,10 @@ class RenderedSection:
     #: the same way the engine did.
     highlight_case: bool = False
     highlight_whole_word: bool = False
+    #: Literal locator (see SearchHit): the run of text before the match within
+    #: its block. A frontend finds ``highlight_prefix + highlight`` literally as
+    #: the ``highlight_ordinal``-th occurrence — no regex, no semantics drift.
+    highlight_prefix: str = ""
     #: Stored reading position within this section (0..1). A frontend restores
     #: scroll to it after load when there is no fragment to honour instead.
     progress: float = 0.0
@@ -89,6 +93,7 @@ class ReaderSession:
         self._pending_ordinal: int = 0
         self._pending_case: bool = False
         self._pending_whole: bool = False
+        self._pending_prefix: str = ""
         self._last_persist: float = 0.0
         self._dirty: bool = False
         self._section_listeners: list[SectionListener] = []
@@ -210,6 +215,7 @@ class ReaderSession:
             highlight_ordinal=self._pending_ordinal,
             highlight_case=self._pending_case,
             highlight_whole_word=self._pending_whole,
+            highlight_prefix=self._pending_prefix,
             progress=self._locator.progress,
         )
 
@@ -266,8 +272,12 @@ class ReaderSession:
 
     def go_to_search_hit(self, hit: SearchHit) -> None:
         """Navigate to a hit's section and ask the frontend to highlight it."""
-        self._pending_highlight = hit.query
-        self._pending_ordinal = hit.ordinal
+        # Highlight by literal locator: the exact matched text, the text before
+        # it in its block, and the occurrence index of that literal. A frontend
+        # finds this without re-applying case/whole-word semantics of its own.
+        self._pending_highlight = hit.matched_text or hit.query
+        self._pending_prefix = hit.prefix
+        self._pending_ordinal = hit.locator_ordinal
         self._pending_case = hit.case_sensitive
         self._pending_whole = hit.whole_word
         try:
@@ -276,6 +286,7 @@ class ReaderSession:
             # The highlight is one-shot: it rode along with the emitted section
             # and must not leak into later re-renders (e.g. a settings change).
             self._pending_highlight = ""
+            self._pending_prefix = ""
             self._pending_ordinal = 0
             self._pending_case = False
             self._pending_whole = False

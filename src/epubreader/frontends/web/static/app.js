@@ -39,8 +39,7 @@ function showSection(section) {
   const parts = section.key.split("/").map(encodeURIComponent).join("/");
   page._highlight = section.highlight || "";
   page._ordinal = section.highlight_ordinal || 0;
-  page._hlCase = !!section.highlight_case;
-  page._hlWord = !!section.highlight_whole_word;
+  page._prefix = section.highlight_prefix || "";
   page._progress = section.fragment ? 0 : (section.progress || 0);
   page.src = "/resource/" + parts + frag;
 
@@ -50,8 +49,7 @@ function showSection(section) {
 }
 
 // Block tags the engine (_BLOCK_TAGS) breaks text on. The renderer must break
-// on exactly these — not on every parent change — or word boundaries diverge
-// (e.g. foo<span>bar</span> is "foobar" to the engine, one token).
+// on exactly these so its concatenated text matches the engine's for locating.
 const SEARCH_BLOCK_TAGS = {
   P: 1, DIV: 1, BR: 1, LI: 1, TR: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1,
   SECTION: 1, ARTICLE: 1, HEADER: 1, FOOTER: 1, BLOCKQUOTE: 1, PRE: 1, TD: 1,
@@ -65,17 +63,15 @@ function nearestBlock(node) {
   return null;
 }
 
-// Locate and select the Nth occurrence of a query in the iframe document,
-// building the SAME regex the engine used (escaped, optional \b, case flag) so
-// the ordinal the engine assigned targets the same match. A newline is inserted
-// when the nearest block-level ancestor changes, mirroring the engine's breaks.
-function highlightOccurrence(win, query, ordinal, caseSensitive, wholeWord) {
+// Select a match located by the engine's literal locator: the Nth occurrence of
+// (prefix + matched) as a plain substring. No regex, no case folding, no \b —
+// the engine already decided which occurrence; the frontend just finds that
+// exact literal, so engine and browser can't disagree on Unicode word rules.
+function highlightLocator(win, matched, prefix, ordinal) {
   const doc = win.document;
   const root = doc.body || doc.documentElement;
-  if (!root || !query) return false;
-  let pattern = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (wholeWord) pattern = "\\b" + pattern + "\\b";
-  const re = new RegExp(pattern, caseSensitive ? "g" : "gi");
+  if (!root || !matched) return false;
+  const locator = prefix + matched;
 
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -94,15 +90,15 @@ function highlightOccurrence(win, query, ordinal, caseSensitive, wholeWord) {
     lastBlock = block;
   }
 
-  let m;
-  let count = 0;
-  let target = null;
-  while ((m = re.exec(text))) {
-    if (count === ordinal) { target = { start: m.index, end: m.index + m[0].length }; break; }
-    count++;
-    if (m.index === re.lastIndex) re.lastIndex++;
+  let idx = text.indexOf(locator);
+  let n = 0;
+  while (idx >= 0 && n < ordinal) {
+    idx = text.indexOf(locator, idx + 1);
+    n++;
   }
-  if (!target) return false;
+  if (idx < 0) return false;
+  const matchStart = idx + prefix.length;
+  const matchEnd = matchStart + matched.length;
 
   const locate = (abs) => {
     for (let i = nodes.length - 1; i >= 0; i--) {
@@ -112,8 +108,8 @@ function highlightOccurrence(win, query, ordinal, caseSensitive, wholeWord) {
     }
     return null;
   };
-  const s = locate(target.start);
-  const e = locate(target.end);
+  const s = locate(matchStart);
+  const e = locate(matchEnd);
   if (!s || !e) return false;
   const range = doc.createRange();
   try {
@@ -135,7 +131,7 @@ page.addEventListener("load", () => {
   // engine's own semantics (case sensitivity + whole-word) so the Nth match the
   // engine counted is the one revealed — native find() would count differently.
   if (page._highlight) {
-    try { highlightOccurrence(win, page._highlight, page._ordinal, page._hlCase, page._hlWord); }
+    try { highlightLocator(win, page._highlight, page._prefix, page._ordinal); }
     catch (_e) { /* DOM unavailable */ }
     page._highlight = "";
   } else if (page._progress > 0) {

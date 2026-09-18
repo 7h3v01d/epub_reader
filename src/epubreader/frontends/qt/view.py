@@ -23,34 +23,33 @@ from ...session.settings import ReaderSettings
 from .page import ReaderPage
 from .scheme import DenyFirstInterceptor, EpubSchemeHandler, url_for_key
 
-# App-owned DOM search: rebuilds the engine's regex (escaped query, optional
-# word boundaries, case flag), walks visible text nodes with a newline inserted
-# between differing parents to approximate block breaks, then selects and scrolls
-# to the Nth match. Runs in the application world, so it works with book-content
-# JavaScript disabled. Placeholders are filled with json-safe values.
+# App-owned literal locator search: finds the Nth occurrence of (prefix+matched)
+# as a plain substring — no regex, no case folding, no \b — over text walked with
+# block breaks matching the engine. The engine already chose the occurrence, so
+# Qt and the engine can't disagree. Runs in the application world (book-content
+# JavaScript stays disabled). Placeholders are filled with json-safe values.
 _HIGHLIGHT_JS = r"""(function(){
-  var q=%(q)s, ordinal=%(n)d, caseSensitive=%(case)s, wholeWord=%(whole)s;
+  var matched=%(m)s, prefix=%(p)s, ordinal=%(n)d;
   var doc=document, root=doc.body||doc.documentElement;
-  if(!root||!q) return;
+  if(!root||!matched) return;
+  var locator=prefix+matched;
   var BLOCK={P:1,DIV:1,BR:1,LI:1,TR:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,SECTION:1,ARTICLE:1,HEADER:1,FOOTER:1,BLOCKQUOTE:1,PRE:1,TD:1};
   function nb(n){ var e=n.parentNode; while(e&&e.nodeType===1){ if(BLOCK[e.nodeName]) return e; e=e.parentNode; } return null; }
-  var pat=q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
-  if(wholeWord) pat="\\b"+pat+"\\b";
-  var re=new RegExp(pat, caseSensitive?"g":"gi");
   var w=doc.createTreeWalker(root, NodeFilter.SHOW_TEXT), nodes=[], text="", n, lb, first=true;
   while((n=w.nextNode())){
-    var p=n.parentNode;
-    if(p&&/^(SCRIPT|STYLE)$/.test(p.nodeName)) continue;
+    var pe=n.parentNode;
+    if(pe&&/^(SCRIPT|STYLE)$/.test(pe.nodeName)) continue;
     var b=nb(n);
     if(!first&&b!==lb) text+="\n";
     first=false;
     nodes.push({node:n,start:text.length}); text+=n.nodeValue; lb=b;
   }
-  var m, c=0, t=null;
-  while((m=re.exec(text))){ if(c===ordinal){t={s:m.index,e:m.index+m[0].length};break;} c++; if(m.index===re.lastIndex) re.lastIndex++; }
-  if(!t) return;
+  var idx=text.indexOf(locator), k=0;
+  while(idx>=0&&k<ordinal){ idx=text.indexOf(locator, idx+1); k++; }
+  if(idx<0) return;
+  var ms=idx+prefix.length, me=ms+matched.length;
   function loc(a){ for(var i=nodes.length-1;i>=0;i--){ if(a>=nodes[i].start&&a-nodes[i].start<=nodes[i].node.nodeValue.length) return {node:nodes[i].node,offset:a-nodes[i].start}; } return null; }
-  var s=loc(t.s), e=loc(t.e); if(!s||!e) return;
+  var s=loc(ms), e=loc(me); if(!s||!e) return;
   var r=doc.createRange();
   try{ r.setStart(s.node,s.offset); r.setEnd(e.node,e.offset); }catch(_e){ return; }
   var sel=window.getSelection(); if(sel){ sel.removeAllRanges(); sel.addRange(r); }
@@ -82,9 +81,8 @@ class ReaderView(QWebEngineView):
         # search hit). findText needs no page scripting, so it keeps the
         # deny-first posture intact.
         self._pending_find = ""
+        self._pending_prefix = ""
         self._pending_ordinal = 0
-        self._pending_case = False
-        self._pending_whole = False
         self._pending_progress = 0.0
         self.loadFinished.connect(self._on_load_finished)
 
@@ -99,9 +97,8 @@ class ReaderView(QWebEngineView):
     # ---- rendering ------------------------------------------------------- #
     def show_section(self, section: RenderedSection) -> None:
         self._pending_find = section.highlight
+        self._pending_prefix = section.highlight_prefix
         self._pending_ordinal = section.highlight_ordinal
-        self._pending_case = section.highlight_case
-        self._pending_whole = section.highlight_whole_word
         # A fragment target wins over a stored fraction; otherwise restore the
         # saved reading position within the section.
         self._pending_progress = 0.0 if section.fragment else section.progress
@@ -111,25 +108,23 @@ class ReaderView(QWebEngineView):
         if not ok:
             return
         if self._pending_find:
-            self._highlight_occurrence(
-                self._pending_find, self._pending_ordinal,
-                self._pending_case, self._pending_whole,
+            self._highlight_locator(
+                self._pending_find, self._pending_prefix, self._pending_ordinal
             )
         elif self._pending_progress > 0:
             self._restore_scroll(self._pending_progress)
         self._pending_progress = 0.0
 
-    def _highlight_occurrence(self, query: str, ordinal: int, case: bool, whole: bool) -> None:
-        # App-owned DOM search in the application world (runs with book-content
-        # JS disabled), using the engine's own regex semantics so the ordinal
-        # targets the same occurrence the engine counted.
+    def _highlight_locator(self, matched: str, prefix: str, ordinal: int) -> None:
+        # App-owned literal locator search in the application world (runs with
+        # book-content JS disabled): finds the Nth occurrence of prefix+matched
+        # that the engine chose — no regex semantics for Qt to get wrong.
         import json
 
         script = _HIGHLIGHT_JS % {
-            "q": json.dumps(query),
+            "m": json.dumps(matched),
+            "p": json.dumps(prefix),
             "n": int(ordinal),
-            "case": "true" if case else "false",
-            "whole": "true" if whole else "false",
         }
         self._page.runJavaScript(script, QWebEngineScript.ScriptWorldId.ApplicationWorld)
 

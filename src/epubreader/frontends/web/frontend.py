@@ -302,6 +302,7 @@ def _section_payload(section: RenderedSection) -> dict:
         "highlight_ordinal": section.highlight_ordinal,
         "highlight_case": section.highlight_case,
         "highlight_whole_word": section.highlight_whole_word,
+        "highlight_prefix": section.highlight_prefix,
         "progress": section.progress,
     }
 

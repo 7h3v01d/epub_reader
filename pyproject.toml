@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Leon Priest <github.com/7h3v01d>
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epubreader"
+description = "A modular EPUB reading engine with a replaceable UI (Qt, web, CLI)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Leon Priest" }]
+keywords = ["epub", "ebook", "reader", "pyqt6", "fastapi"]
+# The engine and the terminal reader are pure standard library — no runtime
+# dependencies. The GUI/web frontends pull their toolkits in as extras below.
+dependencies = []
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing :: Markup",
+]
+
+[project.urls]
+Homepage = "https://github.com/7h3v01d"
+
+# Install only what a given frontend needs:
+#   pip install .            -> engine + terminal reader (no third-party deps)
+#   pip install .[qt]        -> + PyQt6 desktop reader
+#   pip install .[web]       -> + FastAPI web reader
+#   pip install .[dev]       -> + test tooling (engine/web/CLI are all testable)
+[project.optional-dependencies]
+qt = ["PyQt6~=6.6", "PyQt6-WebEngine~=6.6"]
+web = ["fastapi>=0.110,<1.0", "uvicorn[standard]>=0.29,<1.0"]
+dev = [
+    "pytest>=8,<9",
+    "httpx>=0.27,<1.0",
+    "fastapi>=0.110,<1.0",
+]
+
+[project.scripts]
+epubreader-cli = "epubreader.frontends.cli.app:main"
+epubreader-web = "epubreader.frontends.web.app:main"
+
+[project.gui-scripts]
+epubreader = "epubreader.frontends.qt.app:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "epubreader.__version__" }
+
+# Bundle the web frontend's static shell (HTML/CSS/JS) into the package.
+[tool.setuptools.package-data]
+"epubreader.frontends.web" = ["static/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

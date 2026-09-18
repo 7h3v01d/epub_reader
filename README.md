@@ -47,10 +47,16 @@ inherits them:
 - **Full-text search** (`core/search.py`) — `search_book()` walks the spine,
   extracts visible text (script/style/`<title>` excluded), and returns
   `SearchHit`s carrying a spine locator, a section title, a context snippet, and
-  the match offsets within it. No URLs, nothing toolkit-specific. The session
-  exposes `search()` and `go_to_search_hit()`; the latter navigates and asks the
-  frontend to highlight via the section's one-shot `highlight` field (Qt maps it
-  to `findText`, a browser to native find — no page scripting needed).
+  an engine-owned **literal locator** for the match: the exact matched text, the
+  run of text before it within its block, and that literal's occurrence index.
+  A frontend highlights by finding that literal (a plain substring search, no
+  regex, no case-folding, no `\b`) at the given occurrence — so engine and
+  frontend can never disagree on which occurrence is meant, even across Unicode
+  word-boundary or case-folding differences between Python and a browser. The
+  session exposes `search()` and `go_to_search_hit()`; the latter navigates and
+  carries the one-shot locator on the emitted section. `find_literal()` is the
+  reference implementation each frontend mirrors (and the CLI, reusing the same
+  extractor, matches it exactly).
 - **Bookmarks** (`core/locators.py` + the store) — `Bookmark` wraps a `Locator`
   with a label and timestamp, persisted per book through the same
   `ProgressStore` that holds reading position, so they survive restarts and any
@@ -75,6 +81,23 @@ Each frontend maps that key to its own transport:
 That single indirection is what keeps the engine unaware of the UI.
 
 ---
+
+## Installing
+
+The project is a proper package (`pyproject.toml`, `src/` layout). The engine and
+terminal reader have no third-party dependencies; the GUI and web frontends pull
+their toolkits in as extras:
+
+```bash
+pip install .            # engine + terminal reader (epubreader-cli), no deps
+pip install .[qt]        # + PyQt6 desktop reader (epubreader)
+pip install .[web]       # + FastAPI web reader (epubreader-web)
+pip install .[dev]       # + test tooling
+```
+
+Installing provides console entry points (`epubreader-cli`, `epubreader-web`, and
+the `epubreader` GUI), so the `PYTHONPATH=src` form below is only needed when
+running from a checkout without installing.
 
 ## Running it (Windows)
 
@@ -129,15 +152,15 @@ in the desktop reader shows the same bookmarks in the web reader.
 ## Running the tests
 
 ```bash
-export PYTHONPATH=src
-python -m pytest
+python -m pytest      # pyproject sets pythonpath = src, so no PYTHONPATH needed
 ```
 
-The engine, session, frontend contract, and the web routes are covered by a
-fast, headless suite (126 tests; the web tests use FastAPI's `TestClient`, no
-browser). The Qt window is exercised by hand — it needs a display and the
-QtWebEngine binaries — so it is intentionally left out of the suite. The web
-tests skip themselves automatically if FastAPI isn't installed.
+The engine, session, frontend contract, the web routes, and the terminal reader
+are covered by a fast, headless suite (130 tests; the web tests use FastAPI's
+`TestClient` and the CLI's command handler is a pure function, so neither needs a
+browser or a terminal). The Qt window is exercised by hand — it needs a display
+and the QtWebEngine binaries — so it is intentionally left out of the suite. The
+web tests skip themselves automatically if FastAPI isn't installed.
 
 ---
 

@@ -360,20 +360,69 @@ def test_search_flags_reach_the_section(epub3_path):
     assert seen[-1].highlight_case is True
 
 
-# ---- 0.4 review: search hit carries its ordinal --------------------------- #
-def test_search_hit_carries_ordinal_to_section(epub3_path):
+# ---- engine-owned literal search locator --------------------------------- #
+def test_locator_round_trips_against_engine_text(epub3_path):
+    from epubreader.core.book import Book
+    from epubreader.core.search import extract_text, find_literal, search_book
+
+    with Book.open(epub3_path) as book:
+        hits = search_book(book, "Chapter")
+        assert hits
+        for hit in hits:
+            text = extract_text(book.read_resource(hit.key).data)
+            start = find_literal(text, hit.prefix, hit.matched_text, hit.locator_ordinal)
+            assert start >= 0
+            assert text[start:start + len(hit.matched_text)] == hit.matched_text
+
+
+def test_locator_is_newline_invariant(epub3_path):
+    # A frontend that inserts block breaks differently still finds the same
+    # match: the locator is newline-free, so removing every break can neither add
+    # nor remove occurrences of it.
+    from epubreader.core.book import Book
+    from epubreader.core.search import extract_text, find_literal, search_book
+
+    with Book.open(epub3_path) as book:
+        hit = search_book(book, "World")[0]
+        text = extract_text(book.read_resource(hit.key).data)
+        mangled = text.replace("\n", "")            # extreme: no breaks at all
+        a = find_literal(text, hit.prefix, hit.matched_text, hit.locator_ordinal)
+        b = find_literal(mangled, hit.prefix, hit.matched_text, hit.locator_ordinal)
+        assert a >= 0 and b >= 0
+        assert text[a:a + len(hit.matched_text)] == hit.matched_text
+        assert mangled[b:b + len(hit.matched_text)] == hit.matched_text
+
+
+def test_locator_matched_text_preserves_actual_case(epub3_path):
+    # A case-insensitive search for "chapter" matches "Chapter"; the locator
+    # carries the ACTUAL text found, so a frontend's literal find can't miss it.
+    from epubreader.core.book import Book
+    from epubreader.core.search import search_book
+
+    with Book.open(epub3_path) as book:
+        hit = search_book(book, "chapter")[0]
+        assert hit.matched_text == "Chapter"
+
+
+# ---- 0.4 review: search hit's locator reaches the section ----------------- #
+def test_search_hit_carries_locator_to_section(epub3_path):
     session = ReaderSession(MemoryProgressStore())
     session.open(epub3_path)
     seen = []
     session.on_section(seen.append)
-    hits = session.search("Chapter")     # two hits, ordinals 0 then 0 per section
-    # Fabricate a hit with ordinal 2 to prove the ordinal propagates verbatim.
     from epubreader.core.search import SearchHit
 
-    hit = SearchHit(hits[0].spine_index, hits[0].key, "", "Chapter", "…", 0, 7, 2)
+    # A hit whose literal locator is (prefix="a ", matched="Cat", ordinal=2).
+    hit = SearchHit(
+        spine_index=session.current_section().spine_index,
+        key=session.current_section().key,
+        section_title="", query="cat", snippet="…", match_start=0, match_end=3,
+        ordinal=0, matched_text="Cat", prefix="a ", locator_ordinal=2,
+    )
     session.go_to_search_hit(hit)
-    assert seen[-1].highlight == "Chapter"
-    assert seen[-1].highlight_ordinal == 2
+    assert seen[-1].highlight == "Cat"            # the exact matched text
+    assert seen[-1].highlight_prefix == "a "
+    assert seen[-1].highlight_ordinal == 2        # the literal-locator ordinal
     # One-shot: cleared on the next render.
     session.update_settings(ReaderSettings())
-    assert seen[-1].highlight_ordinal == 0
+    assert seen[-1].highlight_ordinal == 0 and seen[-1].highlight_prefix == ""

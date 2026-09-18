@@ -56,6 +56,14 @@ class SearchHit:
     #: (native find alone would count matches differently and mis-target).
     case_sensitive: bool = False
     whole_word: bool = False
+    #: Literal, newline-free locator for the frontend: the exact matched text,
+    #: the run of characters immediately before it within the same block, and the
+    #: occurrence index of ``prefix + matched_text`` in the section's text. A
+    #: frontend finds that literal string (no regex, no \b, no case folding), so
+    #: engine and frontend can never disagree on which occurrence is meant.
+    matched_text: str = ""
+    prefix: str = ""
+    locator_ordinal: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +77,9 @@ class SearchHit:
             "ordinal": self.ordinal,
             "case_sensitive": self.case_sensitive,
             "whole_word": self.whole_word,
+            "matched_text": self.matched_text,
+            "prefix": self.prefix,
+            "locator_ordinal": self.locator_ordinal,
         }
 
     @classmethod
@@ -84,6 +95,9 @@ class SearchHit:
             ordinal=int(data.get("ordinal", 0)),
             case_sensitive=bool(data.get("case_sensitive", False)),
             whole_word=bool(data.get("whole_word", False)),
+            matched_text=str(data.get("matched_text", "")),
+            prefix=str(data.get("prefix", "")),
+            locator_ordinal=int(data.get("locator_ordinal", 0)),
         )
 
 
@@ -180,6 +194,47 @@ def _compile(query: str, *, case_sensitive: bool, whole_word: bool) -> re.Patter
     return re.compile(pattern, flags)
 
 
+def _literal_locator(text: str, start: int, end: int, prefix_len: int = 40):
+    """Compute a frontend-agnostic literal locator for a match.
+
+    Returns (prefix, matched_text, locator_ordinal) where prefix is the run of
+    characters before the match within the same block (no newline), and
+    locator_ordinal is the occurrence index of ``prefix + matched_text`` in the
+    whole section text. Because the locator contains no newline, block-break
+    differences between the engine's extraction and a frontend's DOM text can
+    neither add nor remove occurrences of it — so the ordinal is invariant.
+    """
+    matched = text[start:end]
+    block_start = text.rfind("\n", 0, start) + 1
+    prefix = text[max(block_start, start - prefix_len):start]
+    locator = prefix + matched
+    lit_start = start - len(prefix)
+    ordinal, i = 0, text.find(locator)
+    while 0 <= i < lit_start:
+        ordinal += 1
+        i = text.find(locator, i + 1)
+    return prefix, matched, ordinal
+
+
+def find_literal(text: str, prefix: str, matched_text: str, locator_ordinal: int) -> int:
+    """Return the start offset of the located match, or -1.
+
+    The reference implementation of what each frontend does over its own text:
+    find the ``locator_ordinal``-th occurrence of ``prefix + matched_text`` and
+    return the offset of the matched-text portion.
+    """
+    locator = prefix + matched_text
+    if not locator:
+        return -1
+    i, n = text.find(locator), 0
+    while i >= 0:
+        if n == locator_ordinal:
+            return i + len(prefix)
+        n += 1
+        i = text.find(locator, i + 1)
+    return -1
+
+
 def search_book(
     book: "Book",
     query: str,
@@ -213,6 +268,9 @@ def search_book(
 
         for ordinal, match in enumerate(regex.finditer(text)):
             snippet, ms, me = _build_snippet(text, match.start(), match.end(), context)
+            prefix, matched_text, locator_ordinal = _literal_locator(
+                text, match.start(), match.end()
+            )
             hits.append(
                 SearchHit(
                     spine_index=item.index,
@@ -225,6 +283,9 @@ def search_book(
                     ordinal=ordinal,
                     case_sensitive=case_sensitive,
                     whole_word=whole_word,
+                    matched_text=matched_text,
+                    prefix=prefix,
+                    locator_ordinal=locator_ordinal,
                 )
             )
             if len(hits) >= max_results:

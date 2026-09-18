@@ -90,6 +90,15 @@ def test_highlight_uses_reverse_video_when_colored(epub3_path):
     assert "\033[7m" in out                  # the match is emphasised
 
 
+def test_highlight_marks_actual_case_on_insensitive_search(epub3_path):
+    # A lowercase search still highlights the real "Chapter" (the engine's
+    # matched text), proving the CLI highlights the locator's exact text.
+    r = _reader(epub3_path, color=True)
+    r.handle_command("/chapter")
+    out = r.handle_command("j 1")
+    assert "\033[7mChapter\033[0m" in out
+
+
 def test_unknown_command_message(epub3_path):
     assert "unknown command" in _reader(epub3_path).handle_command("frobnicate")
 

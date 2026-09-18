@@ -16,7 +16,6 @@ it.
 
 from __future__ import annotations
 
-import re
 import shutil
 import sys
 import textwrap
@@ -254,17 +253,13 @@ class CliReader(ReaderFrontend):
         return "\n\n".join(wrapped) if wrapped else "(empty section)"
 
     def _mark(self, body: str, section: RenderedSection) -> str:
-        if not self._color:
+        # section.highlight is the exact matched text the engine found, so a
+        # literal highlight is exact — no regex or case/word semantics needed.
+        if not self._color or not section.highlight:
             return body
-        pattern = re.escape(section.highlight)
-        if section.highlight_whole_word:
-            pattern = rf"\b{pattern}\b"
-        flags = 0 if section.highlight_case else re.IGNORECASE
-        try:
-            regex = re.compile(pattern, flags)
-        except re.error:
-            return body
-        return regex.sub(lambda m: f"{_REVERSE}{m.group(0)}{_RESET}", body)
+        return body.replace(
+            section.highlight, f"{_REVERSE}{section.highlight}{_RESET}"
+        )
 
     def _index(self, arg: str, length: int) -> Optional[int]:
         arg = arg.strip()

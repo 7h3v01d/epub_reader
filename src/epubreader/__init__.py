@@ -8,12 +8,12 @@ Layers, top to bottom:
 * :mod:`epubreader.session`   — stateful reading session + persistence.
 * :mod:`epubreader.render`    — shared theme/document transforms.
 * :mod:`epubreader.frontend`  — the abstract frontend contract.
-* :mod:`epubreader.frontends` — concrete UIs (Qt today; web/CLI drop in).
+* :mod:`epubreader.frontends` — concrete UIs (Qt, web, CLI).
 """
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 __author__ = "Leon Priest"
 
 from .core import Book, EpubError, Locator
