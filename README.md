@@ -156,7 +156,7 @@ python -m pytest      # pyproject sets pythonpath = src, so no PYTHONPATH needed
 ```
 
 The engine, session, frontend contract, the web routes, and the terminal reader
-are covered by a fast, headless suite (130 tests; the web tests use FastAPI's
+are covered by a fast, headless suite (136 tests; the web tests use FastAPI's
 `TestClient` and the CLI's command handler is a pure function, so neither needs a
 browser or a terminal). The Qt window is exercised by hand — it needs a display
 and the QtWebEngine binaries — so it is intentionally left out of the suite. The
@@ -265,8 +265,6 @@ the TOC tree underneath a user who has expanded or selected a node.
   fields (a hostile `spine_index`, a non-string `theme`) are coerced rather than
   crashing startup. Bookmark writes are atomic per-bookmark under a cross-process
   lock, so a desktop and a web reader adding bookmarks concurrently keep both.
-- **Content-addressed identity.** A book's storage id folds in a fingerprint of
-  its archive, so two books sharing a `dc:identifier` don't merge progress.
 - **No script-based progress.** Reading position is read from scroll geometry —
   the view's own in Qt, the iframe's in the browser — so progress tracking never
   requires running book scripts.

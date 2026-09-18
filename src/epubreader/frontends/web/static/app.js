@@ -73,13 +73,17 @@ function highlightLocator(win, matched, prefix, ordinal) {
   if (!root || !matched) return false;
   const locator = prefix + matched;
 
-  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
   const nodes = [];
   let text = "";
   let node;
   let lastBlock;
   let first = true;
   while ((node = walker.nextNode())) {
+    if (node.nodeType === 1) {                 // element
+      if (node.nodeName === "BR") text += "\n"; // <br> has no text node
+      continue;
+    }
     const parent = node.parentNode;
     if (parent && /^(SCRIPT|STYLE)$/.test(parent.nodeName)) continue;
     const block = nearestBlock(node);

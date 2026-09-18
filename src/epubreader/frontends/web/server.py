@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -86,7 +87,12 @@ def create_app(
     plane; the launcher always supplies both. When neither is given (tests,
     embedding) enforcement is off, so behaviour is unchanged.
     """
-    app = FastAPI(title="epubreader", docs_url=None, redoc_url=None)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        frontend.close()   # remove the last owned upload temp dir on shutdown
+
+    app = FastAPI(title="epubreader", docs_url=None, redoc_url=None, lifespan=lifespan)
 
     def _host_ok(request: Request) -> bool:
         if allowed_hosts is None:

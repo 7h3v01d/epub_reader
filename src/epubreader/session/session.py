@@ -317,6 +317,9 @@ class ReaderSession:
         # Atomic append at the store, then refresh from it — so a concurrent
         # reader's bookmarks are preserved rather than overwritten by our cache.
         self._bookmarks = self._store.add_bookmark(book.book_id, bookmark)
+        # Flush any throttled scroll progress now, so a crash right after
+        # bookmarking still resumes to the bookmarked position, not an older one.
+        self._persist()
         return bookmark
 
     def remove_bookmark(self, bookmark: Bookmark | str) -> bool:

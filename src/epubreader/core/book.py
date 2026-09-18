@@ -15,6 +15,7 @@ thread after the initial open completed on a worker thread.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import mimetypes
 import struct
@@ -91,25 +92,31 @@ class Book:
             if opf_key not in self._names:
                 raise InvalidEpubError(f"OPF not found in archive: {opf_key}")
             self._package = parse_package(opf_key, self._raw(opf_key, self.MAX_XML_BYTES))
-            self._validate_spine(self._package)
+            self._package = self._sanitized_package(self._package)
             self._toc = self._load_toc(self._package)
             self._book_id = self._compute_book_id(self._package.metadata)
         except Exception:
             self.close()
             raise
 
-    def _validate_spine(self, package: Package) -> None:
-        """Refuse a book with no readable spine document.
+    def _sanitized_package(self, package: Package) -> Package:
+        """Drop spine items whose resource is absent, then reindex.
 
-        A spine may reference a resource that isn't in the archive; rather than
-        opening successfully and failing later at render time, require that at
-        least one spine document actually exists so ``open()`` reflects whether
-        the book is readable.
+        A spine may reference resources that aren't in the archive. Rather than
+        opening and then failing at render time — including the case where only
+        the *first* section is missing — the spine is filtered to the items that
+        actually exist and their indices are made contiguous again, so every
+        position the reader can navigate to resolves to a real resource.
         """
         if not package.spine:
             raise InvalidEpubError("book has no spine")
-        if not any(item.key in self._names for item in package.spine):
+        kept = [
+            dataclasses.replace(item, index=i)
+            for i, item in enumerate(it for it in package.spine if it.key in self._names)
+        ]
+        if not kept:
             raise InvalidEpubError("no spine document exists in the archive")
+        return dataclasses.replace(package, spine=tuple(kept))
 
     def _preflight_archive(self) -> None:
         """Cheap pre-open checks that bound memory before ZipFile parsing."""
@@ -124,27 +131,35 @@ class Book:
     def _central_directory_preflight(self, size: int) -> None:
         """Count central-directory entries ourselves before ZipFile allocates.
 
-        The EOCD's declared count is attacker-controlled, so it is never trusted
-        as the bound. Instead the central directory's offset/size are validated
-        against the physical file and its byte size is capped, then its records
-        are walked and counted, stopping the moment the count exceeds the budget
-        — so a lying EOCD (small declared count, huge real directory) can't force
-        Python to allocate a ``ZipInfo`` per member.
+        Neither the EOCD's declared count nor its declared central-directory
+        offset is trusted (both are attacker-controlled, and the offset is wrong
+        for a ZIP with a preamble — self-extracting or maliciously prepended
+        bytes). The directory's *physical* start is derived from the EOCD's own
+        position minus the directory size — the same way Python locates it for
+        concatenated archives — and the record signature is verified there. The
+        records are then walked and counted, stopping the moment the count
+        exceeds the budget, so no lying header can force a ``ZipInfo`` per member.
         """
         loc = self._read_eocd(size)
         if loc is None:
             return  # EOCD not locatable; ZipFile + _check_budgets still guard
-        cd_offset, cd_size, declared = loc
-        if cd_offset < 0 or cd_size < 0 or cd_offset + cd_size > size:
+        cd_start, cd_size, declared = loc
+        if cd_size == 0:
+            return  # empty central directory; nothing to bound
+        if cd_start < 0 or cd_size < 0 or cd_start + cd_size > size:
             raise InvalidEpubError("central directory bounds fall outside the file")
         if cd_size > self.MAX_CENTRAL_DIRECTORY_BYTES:
             raise InvalidEpubError(f"central directory too large ({cd_size} bytes)")
         try:
             with open(self._path, "rb") as fh:
-                fh.seek(cd_offset)
+                fh.seek(cd_start)
                 cd = fh.read(cd_size)
         except OSError as exc:
             raise InvalidEpubError(f"cannot read central directory: {exc}") from exc
+        if cd[:4] != b"PK\x01\x02":
+            # Derived position doesn't hold a central-directory record: the
+            # header lied about the directory size, or the file is malformed.
+            raise InvalidEpubError("central directory not found at expected offset")
 
         pos, observed = 0, 0
         while pos + 46 <= len(cd) and cd[pos:pos + 4] == b"PK\x01\x02":
@@ -157,12 +172,14 @@ class Book:
             extra_len = struct.unpack_from("<H", cd, pos + 30)[0]
             comment_len = struct.unpack_from("<H", cd, pos + 32)[0]
             pos += 46 + name_len + extra_len + comment_len
-        # A declared count wildly below the observed one is itself suspicious.
-        if declared is not None and observed > max(declared, 0) and observed > self.MAX_FILE_COUNT:
-            raise InvalidEpubError("central directory entry count mismatch")
 
     def _read_eocd(self, size: int) -> Optional[tuple[int, int, Optional[int]]]:
-        """Return (cd_offset, cd_size, declared_count) from the EOCD, or None."""
+        """Return (physical_cd_start, cd_size, declared_count) or None.
+
+        physical_cd_start is derived from the EOCD record's own file position
+        (the directory ends immediately before it), so it is correct even when
+        the archive has a preamble that makes the stored offset relative.
+        """
         try:
             with open(self._path, "rb") as fh:
                 fh.seek(max(0, size - 66_000))  # 64 KiB max comment + EOCD record
@@ -176,18 +193,17 @@ class Book:
         declared = struct.unpack_from("<H", tail, idx + 10)[0]
         cd_size = struct.unpack_from("<I", tail, idx + 12)[0]
         cd_offset = struct.unpack_from("<I", tail, idx + 16)[0]
+        eocd_pos = tail_start + idx
         if declared == 0xFFFF or cd_size == 0xFFFFFFFF or cd_offset == 0xFFFFFFFF:
             z = tail.rfind(b"PK\x06\x06")             # Zip64 EOCD record
             if z >= 0 and z + 56 <= len(tail):
                 declared = struct.unpack_from("<Q", tail, z + 32)[0]
                 cd_size = struct.unpack_from("<Q", tail, z + 40)[0]
-                cd_offset = struct.unpack_from("<Q", tail, z + 48)[0]
+                eocd_pos = tail_start + z              # directory ends here
             else:
-                return (cd_offset, cd_size, None)
-        # Some archives store cd_offset relative to the tail we read; keep the
-        # absolute value but guard against an obviously bogus one below.
-        _ = tail_start
-        return (cd_offset, cd_size, declared)
+                return None
+        # The directory ends immediately before its EOCD record.
+        return (eocd_pos - cd_size, cd_size, declared)
 
     def _check_budgets(self, infos: list[zipfile.ZipInfo]) -> None:
         """Reject archives that look like decompression bombs, before reading."""

@@ -35,8 +35,9 @@ _HIGHLIGHT_JS = r"""(function(){
   var locator=prefix+matched;
   var BLOCK={P:1,DIV:1,BR:1,LI:1,TR:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,SECTION:1,ARTICLE:1,HEADER:1,FOOTER:1,BLOCKQUOTE:1,PRE:1,TD:1};
   function nb(n){ var e=n.parentNode; while(e&&e.nodeType===1){ if(BLOCK[e.nodeName]) return e; e=e.parentNode; } return null; }
-  var w=doc.createTreeWalker(root, NodeFilter.SHOW_TEXT), nodes=[], text="", n, lb, first=true;
+  var w=doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT), nodes=[], text="", n, lb, first=true;
   while((n=w.nextNode())){
+    if(n.nodeType===1){ if(n.nodeName==="BR") text+="\n"; continue; }
     var pe=n.parentNode;
     if(pe&&/^(SCRIPT|STYLE)$/.test(pe.nodeName)) continue;
     var b=nb(n);

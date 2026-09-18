@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Runtime dependencies for the PyQt6 frontend.
-# The engine (epubreader.core / .session / .render) has NO third-party deps —
-# it is pure standard library, so a web/CLI frontend need not install these.
-PyQt6>=6.6
-PyQt6-WebEngine>=6.6
+# Desktop (PyQt6) frontend dependencies. Bounds match pyproject's [qt] extra.
+# The engine and CLI have no third-party dependencies.
+PyQt6~=6.6
+PyQt6-WebEngine~=6.6

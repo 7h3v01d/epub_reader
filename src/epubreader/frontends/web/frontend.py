@@ -155,6 +155,18 @@ class WebFrontend(ReaderFrontend):
     def abort_upload(self, new_dir: str) -> None:
         shutil.rmtree(new_dir, ignore_errors=True)
 
+    def close(self) -> None:
+        """Release the session and remove the last owned upload temp directory.
+
+        Wired into the server's shutdown so a successful upload's temp dir isn't
+        stranded when the process exits (uploads can be up to the size cap).
+        """
+        with self._lock:
+            self.session.close()
+            if self._temp_dir:
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+                self._temp_dir = None
+
     def state(self) -> dict:
         with self._lock:
             return self._state_locked()

@@ -360,6 +360,110 @@ def test_search_flags_reach_the_section(epub3_path):
     assert seen[-1].highlight_case is True
 
 
+# ---- 0.9 review: prepended-bytes ZIP can't bypass the CD preflight -------- #
+def test_prepended_zip_rejected_before_zipfile(tmp_path, monkeypatch):
+    import zipfile
+
+    z = tmp_path / "z.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("META-INF/container.xml", b"<x/>")
+        for i in range(Book.MAX_FILE_COUNT + 10):
+            zf.writestr(f"f{i}.txt", b"")
+    # Prepend arbitrary bytes without fixing the ZIP's internal offsets — the
+    # self-extracting / concatenated-archive shape Python's ZipFile still reads.
+    prepended = tmp_path / "pre.zip"
+    prepended.write_bytes(b"\x00" * 137 + z.read_bytes())
+
+    import epubreader.core.book as book_mod
+
+    def _boom(*a, **k):
+        raise AssertionError("ZipFile constructed despite the CD preflight")
+
+    monkeypatch.setattr(book_mod.zipfile, "ZipFile", _boom)
+    # Rejected by the walk (CD correctly located despite the preamble), before
+    # any ZipFile allocation — not merely by a fallback.
+    with pytest.raises(InvalidEpubError, match="too many"):
+        Book.open(prepended)
+
+
+def test_lying_cd_size_rejected(tmp_path, epub3_path, monkeypatch):
+    # If the derived directory position doesn't hold a CD record (a lied-about
+    # cd_size), reject rather than silently reading the wrong bytes.
+    import struct
+
+    raw = bytearray(epub3_path.read_bytes())
+    idx = raw.rfind(b"PK\x05\x06")
+    struct.pack_into("<I", raw, idx + 12, 999999)   # bogus central-directory size
+    p = tmp_path / "lied.epub"
+    p.write_bytes(raw)
+    with pytest.raises(InvalidEpubError):
+        Book.open(p)
+
+
+# ---- 0.9 review: missing first spine item is sanitized -------------------- #
+def _epub_with_spine(tmp_path, name, itemrefs, present_keys):
+    import zipfile
+
+    manifest = "".join(
+        f'<item id="i{n}" href="{href}" media-type="application/xhtml+xml"/>'
+        for n, href in enumerate(itemrefs)
+    )
+    spine = "".join(f'<itemref idref="i{n}"/>' for n in range(len(itemrefs)))
+    opf = (
+        '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
+        'version="3.0" unique-identifier="id"><metadata '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        '<dc:identifier id="id">X</dc:identifier><dc:title>T</dc:title></metadata>'
+        f"<manifest>{manifest}</manifest><spine>{spine}</spine></package>"
+    )
+    p = tmp_path / name
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?><container xmlns='
+            '"urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+            '<rootfile full-path="content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        z.writestr("content.opf", opf)
+        for href in present_keys:
+            z.writestr(href, "<html><body>x</body></html>")
+    return p
+
+
+def test_missing_first_spine_item_is_dropped(tmp_path):
+    # spine[0] absent, spine[1] present -> book opens on the present one.
+    p = _epub_with_spine(
+        tmp_path, "partial.epub",
+        itemrefs=["missing.xhtml", "good.xhtml"],
+        present_keys=["good.xhtml"],
+    )
+    with Book.open(p) as book:
+        assert [it.key for it in book.spine] == ["good.xhtml"]
+        assert all(book.has_resource(it.key) for it in book.spine)
+        assert book.spine[0].index == 0     # reindexed contiguously
+
+
+# ---- 0.9 review: engine breaks on <br> (search-locator correctness) ------- #
+def test_extract_text_breaks_on_br():
+    from epubreader.core.search import extract_text
+
+    text = extract_text(b"<html><body><p>foo<br>bar</p></body></html>")
+    assert "foobar" not in text          # <br> is a block break, not a join
+    assert "foo" in text and "bar" in text
+
+
+# ---- 0.9 review: bookmarking flushes throttled progress ------------------- #
+def test_bookmark_flushes_progress(epub3_path):
+    store = MemoryProgressStore()
+    session = ReaderSession(store)
+    session.open(epub3_path)
+    session.report_progress(0.1)          # first write goes through
+    session.report_progress(0.8)          # throttled: in memory, not yet on disk
+    session.add_bookmark()                 # must flush the 0.8 locator
+    assert store.get_locator(session.book.book_id).progress == 0.8
+
+
 # ---- engine-owned literal search locator --------------------------------- #
 def test_locator_round_trips_against_engine_text(epub3_path):
     from epubreader.core.book import Book

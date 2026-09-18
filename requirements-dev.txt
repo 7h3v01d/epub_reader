@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-# Development / test dependencies.
--r requirements.txt
+# Development / test dependencies. Bounds match pyproject's [dev] extra.
+# (Engine, web-route and CLI tests need no Qt; install requirements.txt too for
+# the desktop frontend.) Equivalent to:  pip install -e .[dev]
 -r requirements-web.txt
-pytest>=8.0
-httpx>=0.27
+pytest>=8,<9
+httpx>=0.27,<1.0

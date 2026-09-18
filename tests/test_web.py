@@ -260,6 +260,18 @@ def test_failed_upload_preserves_open_book(web, epub3_path):
     assert client.get("/api/state").json()["is_open"]
 
 
+def test_close_removes_active_upload_temp_dir(empty_client, epub3_path):
+    from pathlib import Path
+
+    frontend, client = empty_client
+    client.post("/api/upload", params={"name": "a.epub"}, content=Path(epub3_path).read_bytes())
+    temp = frontend._temp_dir
+    assert temp and Path(temp).is_dir()
+    frontend.close()                       # server-shutdown lifecycle
+    assert frontend._temp_dir is None
+    assert not Path(temp).exists()         # not stranded
+
+
 def test_oversized_upload_leaves_no_temp_dir(empty_client, monkeypatch):
     import glob
     import tempfile
